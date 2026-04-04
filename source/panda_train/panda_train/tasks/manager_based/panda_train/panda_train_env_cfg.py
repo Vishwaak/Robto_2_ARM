@@ -1,180 +1,162 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
-
 import math
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
-from isaaclab.managers import ObservationTermCfg as ObsTerm
+
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 
-from . import mdp
-
-##
-# Pre-defined configs
-##
-
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
+import isaaclab_tasks.manager_based.manipulation.reach.mdp as mdp
+from isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg import (
+    FrankaReachEnvCfg as BaseCfg,
+)
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
 
-##
-# Scene definition
-##
+from isaaclab.sensors import CameraCfg
+import isaaclab.sim as sim_utils
 
 
-@configclass
-class PandaTrainSceneCfg(InteractiveSceneCfg):
-    """Configuration for a cart-pole scene."""
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 
-    # ground plane
-    ground = AssetBaseCfg(
-        prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
-    )
+from isaaclab.utils.modifiers import ModifierCfg
 
-    # robot
-    robot: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-
-    # lights
-    dome_light = AssetBaseCfg(
-        prim_path="/World/DomeLight",
-        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
-    )
+import torch
+from torch import nn
 
 
-##
-# MDP settings
-##
+ 
+class DepthEncoderModifier:
+    """
+    CNN encoder that compresses a (N, 1, 64, 64) depth image to (N, 64) latent.
+    Used as an Isaac Lab observation modifier so RSL-RL sees a flat 96D vector.
+ 
+    The encoder is trained end-to-end with PPO — gradients flow through it
+    because Isaac Lab applies modifiers inside the obs computation graph.
+    """
+ 
+    def __init__(self, latent_dim: int = 64, image_height: int = 64, image_width: int = 64):
+        self.latent_dim = latent_dim
+        self.image_height = image_height
+        self.image_width = image_width
+        self._encoder = None  # lazy init on first call (device not known at cfg time)
+ 
+    def _build_encoder(self, device: torch.device) -> nn.Module:
+        """Build CNN encoder. Called once on first forward pass."""
+        # For 64x64 input:
+        # Conv1: (1,64,64) → (32,31,31)
+        # Conv2: (32,31,31) → (64,15,15)
+        # Conv3: (64,15,15) → (64,7,7)
+        # Flatten: 64*7*7 = 3136
+        return nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=0), nn.ELU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=0), nn.ELU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=0), nn.ELU(),
+            nn.Flatten(),
+            nn.Linear(64 * 7 * 7, self.latent_dim), nn.ELU(),
+        ).to(device)
+ 
+    def __call__(self, depth: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            depth: (N, H, W) or (N, 1, H, W) depth image tensor, values in meters.
+        Returns:
+            latent: (N, latent_dim) encoded representation.
+        """
+        # Lazy init encoder on first call
+        if self._encoder is None:
+            self._encoder = self._build_encoder(depth.device)
+ 
+        # Ensure shape is (N, 1, H, W)
+        if depth.dim() == 3:
+            depth = depth.unsqueeze(1)  # (N, H, W) → (N, 1, H, W)
+ 
+        # Normalize depth to [0, 1] using clipping range (0.01, 2.0)
+        depth = torch.clamp(depth, 0.01, 2.0) / 2.0
+ 
+        return self._encoder(depth)  # (N, latent_dim)
+ 
+# Module-level encoder instance — shared across all uses
+_depth_encoder_instance = DepthEncoderModifier(latent_dim=64, image_height=64, image_width=64)
 
 
-@configclass
-class ActionsCfg:
-    """Action specifications for the MDP."""
 
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
-
-
-@configclass
-class ObservationsCfg:
-    """Observation specifications for the MDP."""
-
-    @configclass
-    class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
-
-        # observation terms (order preserved)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
-
-        def __post_init__(self) -> None:
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    # observation groups
-    policy: PolicyCfg = PolicyCfg()
-
-
-@configclass
-class EventCfg:
-    """Configuration for events."""
-
-    # reset
-    reset_cart_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
-            "position_range": (-1.0, 1.0),
-            "velocity_range": (-0.5, 0.5),
-        },
-    )
-
-    reset_pole_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
-            "position_range": (-0.25 * math.pi, 0.25 * math.pi),
-            "velocity_range": (-0.25 * math.pi, 0.25 * math.pi),
-        },
-    )
-
+def depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """
+    Custom obs term: fetches depth image and encodes it to a 64D latent.
+    Returns: (N, 64) tensor — compatible with flat obs concatenation.
+    """
+    # Get camera sensor
+    sensor = env.scene[sensor_cfg.name]
+    # Get depth image: (N, H, W, 1)
+    depth = sensor.data.output["depth"]
+    # Reshape to (N, 1, H, W) for CNN
+    depth = depth.squeeze(-1).unsqueeze(1)  # (N, 1, H, W)
+    return _depth_encoder_instance(depth)   # (N, 64)
 
 @configclass
-class RewardsCfg:
-    """Reward terms for the MDP."""
+class PandaTrainEnvCfg(BaseCfg):
+    def __post_init__(self):
+        super().__post_init__()
 
-    # (1) Constant running reward
-    alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
-    # (3) Primary task: keep pole upright
-    pole_pos = RewTerm(
-        func=mdp.joint_pos_target_l2,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]), "target": 0.0},
-    )
-    # (4) Shaping tasks: lower cart velocity
-    cart_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
-    )
-    # (5) Shaping tasks: lower pole angular velocity
-    pole_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.005,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"])},
-    )
+        self.scene.robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.num_envs = 4096
 
+        wrist_camera = CameraCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_camera",  # attached to hand
+                update_period=0.0,       # update_period not update_rate_hz
+                height=64,
+                width=64,
+                data_types=["depth"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=24.0,
+                    focus_distance=400.0,
+                    horizontal_aperture=20.955,
+                    clipping_range=(0.01, 2.0),
+                ),
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.08, 0.0, 0.04),
+                    rot=(0.0, 0.0, 0.0, 1.0),
+                    convention="ros",
+                ),
+            )
+        
+        self.scene.wrist_camera = wrist_camera
 
-@configclass
-class TerminationsCfg:
-    """Termination terms for the MDP."""
-
-    # (1) Time out
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Cart out of bounds
-    cart_out_of_bounds = DoneTerm(
-        func=mdp.joint_pos_out_of_manual_limit,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]), "bounds": (-3.0, 3.0)},
-    )
-
-
-##
-# Environment configuration
-##
+        self.observations.policy.depth_image = ObsTerm(
+            func=depth_encoded,
+            params={"sensor_cfg": SceneEntityCfg("wrist_camera")},
+            # no data_type, no normalize — depth_encoded handles everything internally
+        )
+      
+        # switch to joint velocity controller
+        self.actions.arm_action = mdp.JointPositionActionCfg(
+            asset_name="robot", joint_names=["panda_joint.*"], scale=0.175, use_default_offset=True
+        )
 
 
-@configclass
-class PandaTrainEnvCfg(ManagerBasedRLEnvCfg):
-    # Scene settings
-    scene: PandaTrainSceneCfg = PandaTrainSceneCfg(num_envs=4096, env_spacing=4.0)
-    # Basic settings
-    observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
-    events: EventCfg = EventCfg()
-    # MDP settings
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
+        self.commands.ee_pose.ranges.pitch = (math.pi, math.pi)
 
-    # Post initialization
-    def __post_init__(self) -> None:
-        """Post initialization."""
-        # general settings
-        self.decimation = 2
-        self.episode_length_s = 5
-        # viewer settings
-        self.viewer.eye = (8.0, 0.0, 5.0)
-        # simulation settings
-        self.sim.dt = 1 / 120
-        self.sim.render_interval = self.decimation
+       
+        
+        self.rewards.end_effector_position_tracking.weight = -2.0
+        self.rewards.end_effector_position_tracking_fine_grained.weight = -0.5 
+        self.rewards.end_effector_orientation_tracking.weight = -0.75
+
+        self.rewards.action_rate = RewTerm(
+            func=mdp.action_rate_l2,
+            weight=-0.01,
+            )
+        self.rewards.reach_bonus = RewTerm(
+            func=mdp.position_command_error_tanh,
+            weight=0.75,
+            params={
+                "std": 0.1,
+                "asset_cfg": SceneEntityCfg("robot", body_names="panda_hand"),
+                "command_name": "ee_pose",
+                },
+        )
+        self.rewards.joint_vel = RewTerm(
+            func=mdp.joint_vel_l2,
+            weight=-0.0001,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )

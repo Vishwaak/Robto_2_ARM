@@ -11,13 +11,14 @@ from . import agents
 # Register Gym environments.
 ##
 
+from .panda_train_env_cfg import PandaTrainEnvCfg
 
 gym.register(
-    id="Template-Panda-Train-v0",
+    id="Isaac-Panda-Reach-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.panda_train_env_cfg:PandaTrainEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+        "env_cfg_entry_point": PandaTrainEnvCfg,
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FrankaReachPPORunnerCfg",
     },
 )

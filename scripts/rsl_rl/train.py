@@ -104,6 +104,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 logger = logging.getLogger(__name__)
 
 import panda_train.tasks  # noqa: F401
+from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -222,6 +223,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 
     # close the simulator
+
+    from panda_train.tasks.manager_based.panda_train.panda_train_env_cfg import _depth_encoder_instance
+
+    if _depth_encoder_instance._encoder is not None:
+        encoder_path = os.path.join(log_dir, "encoder.pt")
+        torch.save(_depth_encoder_instance._encoder.state_dict(), encoder_path)
+        print(f"[INFO] Depth encoder saved to: {encoder_path}")
+    
     env.close()
 
 
