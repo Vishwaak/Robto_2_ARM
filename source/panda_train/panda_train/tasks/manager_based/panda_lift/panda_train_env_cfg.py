@@ -26,7 +26,11 @@ from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import LiftEnvC
 ##
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort: skip
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+
+from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose
+
 
 
 from isaaclab.sensors import TiledCameraCfg  # isort: skip
@@ -34,7 +38,14 @@ from isaaclab.sensors import TiledCameraCfg  # isort: skip
 
 from panda_train.tasks.manager_based.panda_lift.mdp.rewards import finger_object_distance
 
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.envs import mdp as base_mdp
 
+PHASE = 1
+IMG_SIZE = 128  # for depth image obs
+LATENT_DIM = 64
+END_STEP = 750  # number of steps over which to anneal out the object position term in obs
 
 ##
 # Depth Encoder
@@ -72,7 +83,7 @@ class DepthEncoderModifier:
 
 
 # Module-level encoder instance shared across all envs
-_lift_depth_encoder = DepthEncoderModifier(latent_dim=64)
+_lift_depth_encoder = DepthEncoderModifier(latent_dim=LATENT_DIM)
 
 
 def lift_depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -80,15 +91,86 @@ def lift_depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     Custom obs term: fetches wrist depth image and encodes to 64D latent.
     Returns: (N, 64) — compatible with flat obs concatenation.
     """
-    sensor = env.scene[sensor_cfg.name]
-    depth = sensor.data.output["depth"]          # (N, H, W, 1)
-    depth = depth.squeeze(-1).unsqueeze(1)       # (N, 1, H, W)
-    return _lift_depth_encoder(depth)            # (N, 64)
 
+    num_envs = env.num_envs
+    device = env.device
+
+    if PHASE == 1:
+        
+        latent = torch.zeros((num_envs, LATENT_DIM), device=device)  # zeros, object_pos active
+
+    else:
+        sensor = env.scene[sensor_cfg.name]
+        depth = sensor.data.output["depth"]          # (N, H, W, 1)
+        depth = depth.squeeze(-1).unsqueeze(1)       # (N, 1, H, W)
+        latent = _lift_depth_encoder(depth)            # (N, 64)
+    
+    return latent
+
+def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
+    # if PHASE == 2:
+        # return torch.zeros((env.num_envs, 3), device=env.device)
+    real_pos = mdp.object_position_in_robot_root_frame(
+            env, robot_cfg=robot_cfg, object_cfg=object_cfg)
+
+    if PHASE == 2:
+        current_iter = env.common_step_counter // (env.num_envs * 48)
+        blend = max(0.0, 1.0 - current_iter / END_STEP)
+        real_pos = mdp.object_position_in_robot_root_frame(
+            env, robot_cfg=robot_cfg, object_cfg=object_cfg)
+        return blend * real_pos
+    else:
+        return real_pos
 
 ##
 # Environment configuration
 ##
+@configclass
+class CriticCfg(ObsGroup):
+    # mirror all actor terms
+    joint_pos    = ObsTerm(func=mdp.joint_pos_rel)
+    joint_vel    = ObsTerm(func=mdp.joint_vel_rel)
+    actions      = ObsTerm(func=mdp.last_action)
+    target_object_position = ObsTerm(func=mdp.generated_commands,
+                                     params={"command_name": "object_pose"})
+
+    # privileged — ground truth object state
+    object_pos   = ObsTerm(
+        func=mdp.object_position_in_robot_root_frame,
+    )
+    object_vel   = ObsTerm(
+        func=base_mdp.root_lin_vel_w,
+        params={"asset_cfg": SceneEntityCfg("object")},
+    )
+    object_quat  = ObsTerm(
+        func=base_mdp.root_quat_w,
+        params={"asset_cfg": SceneEntityCfg("object")},
+    )
+
+    def __post_init__(self):
+        self.enable_corruption = False  # no noise for critic
+        self.concatenate_terms = True
+
+
+@configclass
+class PolicyCfg(ObsGroup):
+    joint_pos    = ObsTerm(func=mdp.joint_pos_rel)
+    joint_vel    = ObsTerm(func=mdp.joint_vel_rel)
+    object_pos = ObsTerm(
+            func=object_pos_or_zero, 
+            params={"robot_cfg": SceneEntityCfg("robot"),"object_cfg": SceneEntityCfg("object"),},)
+    target_object_position = ObsTerm(                         # same name as original
+        func=mdp.generated_commands,
+        params={"command_name": "object_pose"},
+    )
+    actions      = ObsTerm(func=mdp.last_action)
+    depth_image  = ObsTerm(func=lift_depth_encoded,
+                           params={"sensor_cfg": SceneEntityCfg("wrist_camera")})
+
+    def __post_init__(self):
+        self.enable_corruption = True   # add noise to actor obs for robustness
+        self.concatenate_terms = True
 
 @configclass
 class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
@@ -168,36 +250,56 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.scene.wrist_camera = TiledCameraCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_camera",
                 offset=TiledCameraCfg.OffsetCfg(
-                    pos=(0.08, 0.0, 0.04),
+                    pos=(0.05, 0.0, -0.065),  # 50mm forward, 65mm down from drawing
                     rot=(0.0, 0.0, 0.0, 1.0),
                     convention="ros",
                 ),
                 data_types=["depth"],
                 spawn=sim_utils.PinholeCameraCfg(
-                    focal_length=24.0,
-                    focus_distance=400.0,
-                    horizontal_aperture=20.955,
-                    clipping_range=(0.01, 2.0),
+                    focal_length=1.93,
+                    horizontal_aperture=3.896,
+                    clipping_range=(0.1, 3.0),
                 ),
-                height=128,
-                width=128,
+                height=IMG_SIZE,
+                width=IMG_SIZE,
             )
 
-        # --- Depth Observation ---
-        # Encoded to 64D latent — compatible with flat obs concatenation
-        self.observations.policy.depth_image = ObsTerm(
-            func=lift_depth_encoded,
-            params={"sensor_cfg": SceneEntityCfg("wrist_camera")},
-        )
-    
-    # custom rewards
-    # In __post_init__
-        # self.rewards.finger_object_distance = RewTerm(
-        #     func=finger_object_distance,
-        #     weight=3.0,
-        #     params={"std": 0.05},
-        # )
+        self.events.randomize_camera = EventTerm(
+                func=randomize_camera_pose,
+                mode="reset",
+                params={
+                    "camera_cfg": SceneEntityCfg("wrist_camera"),
+                    # ±5mm position uncertainty
+                    "pos_range": {
+                        "x": (-0.005, 0.005),
+                        "y": (-0.005, 0.005),
+                        "z": (-0.005, 0.005),
+                    },
+                    # ±3 degrees rotation uncertainty
+                    "rot_range": {
+                        "roll":  (-0.052, 0.052),
+                        "pitch": (-0.052, 0.052),
+                        "yaw":   (-0.052, 0.052),
+                    },
+                },
+            )
+        
+        self.observations.critic = CriticCfg()
 
+        self.observations.policy = PolicyCfg() 
+
+        # self.rewards.gripper_close_reward = RewTerm(
+        #         func=finger_object_distance,
+        #         weight=5.0,   # high weight — this is the key missing signal
+        #         params={
+        #             "robot_cfg": SceneEntityCfg("robot"),
+        #             "object_cfg": SceneEntityCfg("object"),
+        #         },
+        #     )
+        self.rewards.reaching_object.weight = 1.0        # was 1.0
+        self.rewards.lifting_object.weight = 20.0        # was 15.0
+        self.rewards.object_goal_tracking.weight = 10.0   # was default
+    
 @configclass
 class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):
     def __post_init__(self):
@@ -205,3 +307,6 @@ class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False
+
+
+

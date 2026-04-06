@@ -10,6 +10,8 @@
 import argparse
 import sys
 
+
+
 from isaaclab.app import AppLauncher
 
 # local imports
@@ -180,6 +182,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    
+    print(f"[INFO] Environment created: {env}")
+    print(f"[INFO] Agent resume flag: {agent_cfg.resume}")
+    if agent_cfg.resume:
+        print(f"[INFO] Resuming from: {resume_path}")
 
     # wrap for video recording
     if args_cli.video:
@@ -194,9 +201,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     start_time = time.time()
+  
+    # should print the Phase 1 checkpoint path
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    obs_dict = env.get_observations()
+    print(f"Obs keys: {obs_dict.keys()}")
+    for k, v in obs_dict.items():
+        print(f"  {k}: {v.shape}")
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
@@ -224,11 +237,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # close the simulator
 
-    from panda_train.tasks.manager_based.panda_train.panda_train_env_cfg import _depth_encoder_instance
 
-    if _depth_encoder_instance._encoder is not None:
+    if _lift_depth_encoder._encoder is not None:
         encoder_path = os.path.join(log_dir, "encoder.pt")
-        torch.save(_depth_encoder_instance._encoder.state_dict(), encoder_path)
+        torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_path)
         print(f"[INFO] Depth encoder saved to: {encoder_path}")
     
     env.close()

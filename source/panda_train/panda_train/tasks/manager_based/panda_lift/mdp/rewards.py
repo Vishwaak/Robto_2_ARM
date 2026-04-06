@@ -34,31 +34,34 @@ from isaaclab.envs import ManagerBasedRLEnv
 
 def finger_object_distance(
     env: ManagerBasedRLEnv,
-    std: float,
+    std: float = 0.1,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """
-    Reward for both fingers being close to the object.
-    Uses panda_leftfinger and panda_rightfinger body positions.
-    """
     robot = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
 
-    # Get finger positions
-    left_finger_idx = robot.find_bodies("panda_leftfinger")[0][0]
+    # finger positions
+    left_finger_idx  = robot.find_bodies("panda_leftfinger")[0][0]
     right_finger_idx = robot.find_bodies("panda_rightfinger")[0][0]
+    left_pos  = robot.data.body_pos_w[:, left_finger_idx, :]
+    right_pos = robot.data.body_pos_w[:, right_finger_idx, :]
+    obj_pos   = obj.data.root_pos_w[:, :3]
 
-    left_pos = robot.data.body_pos_w[:, left_finger_idx, :]   # (N, 3)
-    right_pos = robot.data.body_pos_w[:, right_finger_idx, :] # (N, 3)
+    # distance reward
+    left_dist  = torch.norm(left_pos - obj_pos, dim=-1)
+    right_dist = torch.norm(right_pos - obj_pos, dim=-1)
+    proximity  = torch.exp(-left_dist / std) + torch.exp(-right_dist / std)
 
-    # Get object position
-    obj_pos = obj.data.root_pos_w[:, :3]                      # (N, 3)
+    # gripper closure — finger joints: 0=closed, 0.04=open
+    left_joint_idx  = robot.find_joints("panda_finger_joint1")[0][0]
+    right_joint_idx = robot.find_joints("panda_finger_joint2")[0][0]
+    left_joint  = robot.data.joint_pos[:, left_joint_idx]
+    right_joint = robot.data.joint_pos[:, right_joint_idx]
+    gripper_closed = 1.0 - ((left_joint + right_joint) / 2.0) / 0.04  # 0=open, 1=closed
 
-    # Distance from each finger to object
-    left_dist = torch.norm(left_pos - obj_pos, dim=-1)        # (N,)
-    right_dist = torch.norm(right_pos - obj_pos, dim=-1)      # (N,)
+    # only reward closing when fingers are near object
+    near_object = (proximity > 1.5).float()  # both fingers within ~std of object
+    closure_reward = near_object * gripper_closed
 
-    # Reward both fingers being close
-    reward = torch.exp(-left_dist / std) + torch.exp(-right_dist / std)
-    return reward
+    return proximity + closure_reward
