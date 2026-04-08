@@ -65,3 +65,15 @@ def finger_object_distance(
     closure_reward = near_object * gripper_closed
 
     return proximity + closure_reward
+    
+def ee_height_penalty(
+    env: ManagerBasedRLEnv,
+    min_height: float = 0.13,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    ee_idx = robot.find_bodies("panda_hand")[0][0]
+    ee_height = robot.data.body_pos_w[:, ee_idx, 2]
+    penalty = torch.clamp(min_height - ee_height, min=0.0)
+    # print(f"EE height: min={ee_height.min().item():.4f} max={ee_height.max().item():.4f} mean={ee_height.mean().item():.4f}")
+    return -penalty

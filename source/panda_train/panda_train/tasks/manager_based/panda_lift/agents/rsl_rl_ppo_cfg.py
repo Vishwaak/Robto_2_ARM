@@ -10,16 +10,16 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 96
-    max_iterations = 1000
+    max_iterations = 3000
     save_interval = 50
     experiment_name = "franka_lift_depth"
-    run_name = "training_lift_async_depth_PHASE_1"
-    log_root_path = "/home/developer/Desktop/project/arms_dealer/panda_train/logs"
+    run_name = "training_lift_async_depth_PHASE_4"
+    log_root_path = "/home/xerous/Desktop/project/logs/"
     logger = "wandb"
     wandb_project = "isaac-panda"
     resume=True
-    load_run = "2026-04-05_15-58-21_training_lift_async_depth_PHASE_1"  # exact run name
-    load_checkpoint = "model_999.pt"  # exact filename
+    load_run = "2026-04-07_16-42-35_training_lift_async_depth_PHASE_3_retrain"  # exact run name
+    load_checkpoint = "model_2997.pt"  # exact filename
 
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,

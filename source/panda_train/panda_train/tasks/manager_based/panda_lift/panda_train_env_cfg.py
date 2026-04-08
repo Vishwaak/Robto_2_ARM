@@ -20,6 +20,8 @@ import isaaclab.sim as sim_utils
 
 from isaaclab_tasks.manager_based.manipulation.lift import mdp
 from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import LiftEnvCfg
+from isaaclab.sensors import ContactSensorCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 
 ##
 # Pre-defined configs
@@ -37,15 +39,16 @@ from isaaclab.sensors import TiledCameraCfg  # isort: skip
 
 
 from panda_train.tasks.manager_based.panda_lift.mdp.rewards import finger_object_distance
+from panda_train.tasks.manager_based.panda_lift.mdp.rewards import ee_height_penalty
 
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import mdp as base_mdp
 
-PHASE = 1
+PHASE = 2
 IMG_SIZE = 128  # for depth image obs
 LATENT_DIM = 64
-END_STEP = 750  # number of steps over which to anneal out the object position term in obs
+END_STEP = 200  # number of steps over which to anneal out the object position term in obs
 
 ##
 # Depth Encoder
@@ -96,9 +99,7 @@ def lift_depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     device = env.device
 
     if PHASE == 1:
-        
         latent = torch.zeros((num_envs, LATENT_DIM), device=device)  # zeros, object_pos active
-
     else:
         sensor = env.scene[sensor_cfg.name]
         depth = sensor.data.output["depth"]          # (N, H, W, 1)
@@ -109,8 +110,6 @@ def lift_depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
 
 def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
-    # if PHASE == 2:
-        # return torch.zeros((env.num_envs, 3), device=env.device)
     real_pos = mdp.object_position_in_robot_root_frame(
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
 
@@ -119,9 +118,18 @@ def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
         blend = max(0.0, 1.0 - current_iter / END_STEP)
         real_pos = mdp.object_position_in_robot_root_frame(
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
+
+        if current_iter > END_STEP:
+            print("[object_pos_or_zero] Blending complete, fully unmasked object position.")
+            return torch.zeros((env.num_envs, 3), device=env.device)
+        
         return blend * real_pos
-    else:
+
+    elif PHASE == 1:
         return real_pos
+
+    else:
+        return torch.zeros((env.num_envs, 3), device=env.device)
 
 ##
 # Environment configuration
@@ -194,7 +202,12 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.sim.render.enable_translucency = False
 
         # --- Robot ---
-        self.scene.robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot = FRANKA_PANDA_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        spawn=FRANKA_PANDA_CFG.spawn.replace(
+            activate_contact_sensors=True
+                ),
+            )
 
         # --- Actions ---
         self.actions.arm_action = mdp.JointPositionActionCfg(
@@ -288,15 +301,40 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
 
         self.observations.policy = PolicyCfg() 
 
-        # self.rewards.gripper_close_reward = RewTerm(
-        #         func=finger_object_distance,
-        #         weight=5.0,   # high weight — this is the key missing signal
-        #         params={
-        #             "robot_cfg": SceneEntityCfg("robot"),
-        #             "object_cfg": SceneEntityCfg("object"),
-        #         },
-        #     )
-        self.rewards.reaching_object.weight = 1.0        # was 1.0
+        self.scene.contact_sensor = ContactSensorCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/.*",
+                update_period=0.0,
+                history_length=3,
+                debug_vis=False,
+            )
+
+        # Terminate episode on table contact
+        self.terminations.table_contact = DoneTerm(
+            func=base_mdp.illegal_contact,
+            params={
+                "threshold": 1.0,
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_sensor",
+                    body_names=["panda_hand"],
+                ),
+            },
+)
+
+        # --- Contact Sensor ---
+        # self.scene.contact_sensor = ContactSensorCfg(
+        #     prim_path="{ENV_REGEX_NS}/Robot/.*",
+        #     update_period=0.0,
+        #     history_length=3,
+        #     debug_vis=False,
+        # )
+
+        self.rewards.ee_height_penalty = RewTerm(
+                func=ee_height_penalty,
+                weight=15.0,
+                params={"min_height": 0.13}, 
+        )
+
+        self.rewards.reaching_object.weight = 9.0        # was 1.0
         self.rewards.lifting_object.weight = 20.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 10.0   # was default
     
@@ -307,6 +345,7 @@ class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False
+        self.events.randomize_camera = None
 
 
 

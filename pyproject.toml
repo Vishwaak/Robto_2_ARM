@@ -3,6 +3,17 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "panda_train"
+version = "0.1.0"
+
+[tool.setuptools.packages.find]
+where = ["source"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -61,24 +72,18 @@ section-order = [
     "future",
     "standard-library",
     "third-party",
-    # Group omniverse extensions separately since they are run-time dependencies
-    # which are pulled in by Isaac Lab extensions
     "omniverse-extensions",
-    # Group Isaac Lab extensions together since they are all part of the Isaac Lab project
     "isaaclab",
     "isaaclab-contrib",
     "isaaclab-rl",
     "isaaclab-mimic",
     "isaaclab-tasks",
     "isaaclab-assets",
-    # First-party is reserved for project templates
     "first-party",
     "local-folder",
 ]
 
 [tool.ruff.lint.isort.sections]
-# Define what belongs in each custom section
-
 "omniverse-extensions" = [
     "isaacsim",
     "omni",
@@ -97,7 +102,6 @@ section-order = [
 "isaaclab-tasks" = ["isaaclab_tasks"]
 
 [tool.ruff.format]
-
 docstring-code-format = true
 
 [tool.pyright]
@@ -117,26 +121,18 @@ pythonVersion = "3.11"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
 
-# This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
-# Therefore, we have to ignore missing imports
 reportMissingImports = "none"
-# This is required to ignore for type checks of modules with stubs missing.
-reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
-
-reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
-reportOptionalMemberAccess = "warning" # -> raises 8 errors
+reportMissingModuleSource = "none"
+reportGeneralTypeIssues = "none"
+reportOptionalMemberAccess = "warning"
 reportPrivateUsage = "warning"
-
 
 [tool.codespell]
 skip = '*.usd,*.usda,*.usdz,*.svg,*.png,_isaac_sim*,*.bib,*.css,*/_build'
 quiet-level = 0
-# the world list should always have words in lower case
 ignore-words-list = "haa,slq,collapsable,buss,reacher,thirdparty"
 
-
 [tool.pytest.ini_options]
-
 markers = [
     "isaacsim_ci: mark test to run in isaacsim ci",
 ]

@@ -221,10 +221,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
+    original_save = runner.save
+
+    #monkey patch the save function to also save the encoder weights
+    def save_with_encoder(path):
+        original_save(path)
+        encoder_save_path = path.replace(".pt", "_encoder.pt")
+        if _lift_depth_encoder._encoder is not None:
+            torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_save_path)
+            print(f"[INFO] Encoder saved to: {encoder_save_path}")
+    runner.save = save_with_encoder
+    
+    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-07_16-42-35_training_lift_async_depth_PHASE_3_retrain/encoder.pt"
+    IMG_SIZE = 128
+    if os.path.exists(encoder_path):
+        print(f"[INFO] Loading encoder weights from: {encoder_path}")
+        _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
+            torch.device("cuda:0"),
+            torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device="cuda:0")  # dummy input to init
+        )
+        _lift_depth_encoder._encoder.load_state_dict(
+            torch.load(encoder_path, map_location="cuda:0")
+        )
+        print("[INFO] Encoder weights loaded successfully.")
+    else:
+        print(f"[WARNING] Encoder weights not found at: {encoder_path}")
+        print("[WARNING] Encoder will start from random weights.")
+
+    
+    
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+       
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

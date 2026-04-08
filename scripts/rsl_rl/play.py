@@ -15,6 +15,9 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
+import cv2
+import numpy as np
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
@@ -154,6 +157,56 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+
+    depth_output_dir = os.path.join(log_dir, "videos", "depth_cam")
+    os.makedirs(depth_output_dir, exist_ok=True)
+
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    # Replace the depth_writer variable and save_depth_frame function with this:
+
+    depth_state = {"writer": None}  
+
+    def save_depth_frame(env):
+        print("[INFO] Saving depth frame...")
+        
+        depth = env.unwrapped.scene["wrist_camera"].data.output["depth"]
+        frame = depth[0, :, :, 0].cpu().numpy()
+        frame = np.clip(frame, 0.1, 3.0)
+        frame = ((frame - 0.1) / (3.0 - 0.1) * 255).astype(np.uint8)
+        frame_colored = cv2.applyColorMap(frame, cv2.COLORMAP_JET)
+        print(f"Depth min={frame.min():.3f} max={frame.max():.3f} shape={frame.shape}")
+
+        if depth_state["writer"] is None:
+            h, w = frame_colored.shape[:2]
+            print( os.path.join(depth_output_dir, "depth_cam.avi"))
+            depth_state["writer"] = cv2.VideoWriter(
+                os.path.join(depth_output_dir, "depth_cam.avi"),
+                fourcc, 30, (w, h)
+            )
+            print(f"Writer opened: {depth_state['writer'].isOpened()}")
+        depth_state["writer"].write(frame_colored)
+
+
+    from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
+
+    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-07_20-46-20_training_lift_async_depth_PHASE_4/model_5200_encoder.pt"
+    IMG_SIZE = 128
+    device = env_cfg.sim.device
+
+    if os.path.exists(encoder_path):
+        print(f"[INFO] Loading encoder from: {encoder_path}")
+        _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
+            device,
+            torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device=device)
+        )
+        _lift_depth_encoder._encoder.load_state_dict(
+            torch.load(encoder_path, map_location=device)
+        )
+        _lift_depth_encoder._encoder.eval()  # eval mode for inference
+        print("[INFO] Encoder loaded.")
+    else:
+        print(f"[WARNING] Encoder not found: {encoder_path}")
+
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
@@ -198,6 +251,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    max_depth_frames = 1000  # save 1000 frames (~33 seconds at 30fps)
+    depth_frame_count = 0
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -207,7 +262,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(obs)
             # env stepping
             obs, _, dones, _ = env.step(actions)
-            # reset recurrent states for episodes that have terminated
+            save_depth_frame(env)  # always save, no frame count check
+            
+            if args_cli.video:
+                timestep += 1
+                if timestep == args_cli.video_length:
+                    if depth_state["writer"] is not None:
+                        depth_state["writer"].release()
+                        print(f"[INFO] Depth video saved to: {depth_output_dir}/depth_cam.avi")
+                        break
+            
             if version.parse(installed_version) >= version.parse("4.0.0"):
                 policy.reset(dones)
             else:
