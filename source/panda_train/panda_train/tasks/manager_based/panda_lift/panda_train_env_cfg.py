@@ -45,7 +45,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import mdp as base_mdp
 
-PHASE = 2
+PHASE = 1
 IMG_SIZE = 128  # for depth image obs
 LATENT_DIM = 64
 END_STEP = 200  # number of steps over which to anneal out the object position term in obs
@@ -316,6 +316,20 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 "object_type": "table"
             },
         )
+
+        self.events.reset_object_position = EventTerm(
+            func=mdp.reset_root_state_uniform,
+            mode="reset",
+            params={
+                "pose_range": {
+                    "x": (-0.45, 0.45),
+                    "y": (-0.4, 0.4),
+                    "z": (0.0, 0.0),
+                },
+                "velocity_range": {},
+                "asset_cfg": SceneEntityCfg("object", body_names="Object"),
+            },
+        )
         
         self.observations.critic = CriticCfg()
 
@@ -354,7 +368,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 params={"min_height": 0.13}, 
         )
 
-        self.rewards.reaching_object.weight = 1.0        # was 1.0
+        self.rewards.reaching_object.weight = 10.0        # was 1.0
         self.rewards.lifting_object.weight = 20.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 10.0   # was default
     

@@ -10,10 +10,10 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 96
-    max_iterations = 2000
+    max_iterations = 1000
     save_interval = 50
     experiment_name = "franka_lift_depth"
-    run_name = "training_lift_async_depth_PHASE_2_domain_randomization"  # used for logging and checkpointing
+    run_name = "training_lift_async_depth_PHASE_1_domain_randomization_increase"  # used for logging and checkpointing
     log_root_path = "/home/xerous/Desktop/project/logs/"
     logger = "wandb"
     wandb_project = "isaac-panda"
