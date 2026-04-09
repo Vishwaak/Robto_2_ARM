@@ -31,7 +31,7 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort: skip
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 
-from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose
+from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose, randomize_object_scale
 
 
 
@@ -114,7 +114,7 @@ def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
 
     if PHASE == 2:
-        current_iter = env.common_step_counter // (env.num_envs * 48)
+        current_iter = env.common_step_counter // (env.num_envs * 96)
         blend = max(0.0, 1.0 - current_iter / END_STEP)
         real_pos = mdp.object_position_in_robot_root_frame(
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
@@ -194,7 +194,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
 
         # --- sim parameters --- 
 
-        self.sim.render.rendering_mode  = "performance"
+        # self.sim.render.rendering_mode  = "performance"
         self.sim.render.enable_reflections = False
         self.sim.render.enable_global_illumination = False
         self.sim.render.enable_shadows = False
@@ -297,6 +297,26 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 },
             )
         
+        self.events.randomize_object_scale = EventTerm(
+            func=randomize_object_scale,
+            mode="reset",
+            params={
+                "object_cfg": SceneEntityCfg("object"),
+                "scale_range": (0.7, 1.0),  # 70% to 100% of original size
+                "object_type": "cube"
+            },
+        )
+
+        self.events.randomize_table_scale = EventTerm(
+            func=randomize_object_scale,
+            mode="reset",
+            params={
+                "object_cfg": SceneEntityCfg("table"),
+                "scale_range": (0.8, 1.4),  # wider/narrower table,
+                "object_type": "table"
+            },
+        )
+        
         self.observations.critic = CriticCfg()
 
         self.observations.policy = PolicyCfg() 
@@ -312,7 +332,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.terminations.table_contact = DoneTerm(
             func=base_mdp.illegal_contact,
             params={
-                "threshold": 1.0,
+                "threshold": 5.0,
                 "sensor_cfg": SceneEntityCfg(
                     "contact_sensor",
                     body_names=["panda_hand"],
@@ -330,11 +350,11 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
 
         self.rewards.ee_height_penalty = RewTerm(
                 func=ee_height_penalty,
-                weight=15.0,
+                weight=1.0,
                 params={"min_height": 0.13}, 
         )
 
-        self.rewards.reaching_object.weight = 9.0        # was 1.0
+        self.rewards.reaching_object.weight = 1.0        # was 1.0
         self.rewards.lifting_object.weight = 20.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 10.0   # was default
     

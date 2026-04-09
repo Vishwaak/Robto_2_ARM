@@ -2,7 +2,8 @@ import torch
 import numpy as np
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import SceneEntityCfg
-
+import omni.usd
+from pxr import UsdGeom, Gf
 
 def randomize_camera_pose(
     env: ManagerBasedEnv,
@@ -130,3 +131,39 @@ def randomize_camera_pose(
                 op.Set(Gf.Vec3d(*rand_pos))
             elif op.GetOpType() == UsdGeom.XformOp.TypeOrient:
                 op.Set(Gf.Quatd(qw, qx, qy, qz))
+
+
+def randomize_object_scale(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    scale_range: tuple = (0.6, 1.0),
+    object_type: str = "cube",
+) -> None:
+    """Randomize cube scale on reset."""
+    stage = omni.usd.get_context().get_stage()
+
+    for env_id in env_ids.tolist():
+        obj_path = f"/World/envs/env_{env_id}/Object"
+        prim = stage.GetPrimAtPath(obj_path)
+
+        if not prim.IsValid():
+            continue
+
+        xform = UsdGeom.Xformable(prim)
+        scale = np.random.uniform(*scale_range)
+
+        # Set uniform scale
+        scale_op = None
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                scale_op = op
+                break
+
+        if scale_op is None:
+            scale_op = xform.AddScaleOp()
+
+        if object_type == "cube":
+            scale_op.Set(Gf.Vec3f(scale, scale, scale))
+        else:
+            scale_op.Set(Gf.Vec3f(scale, scale, 1.0))  # For non-cubes, only scale XY

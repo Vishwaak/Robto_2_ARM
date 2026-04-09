@@ -232,7 +232,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"[INFO] Encoder saved to: {encoder_save_path}")
     runner.save = save_with_encoder
     
-    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-07_16-42-35_training_lift_async_depth_PHASE_3_retrain/encoder.pt"
+    # encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-07_16-42-35_training_lift_async_depth_PHASE_3_retrain/encoder.pt"
+    encoder_path = ""
     IMG_SIZE = 128
     if os.path.exists(encoder_path):
         print(f"[INFO] Loading encoder weights from: {encoder_path}")

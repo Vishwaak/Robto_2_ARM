@@ -189,7 +189,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
 
-    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-07_20-46-20_training_lift_async_depth_PHASE_4/model_5200_encoder.pt"
+    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-09_00-14-21_training_lift_async_depth_PHASE_2_domain_randomization/model_2949_encoder.pt"
     IMG_SIZE = 128
     device = env_cfg.sim.device
 
