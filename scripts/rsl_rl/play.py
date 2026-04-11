@@ -189,7 +189,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
 
-    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-09_00-14-21_training_lift_async_depth_PHASE_2_domain_randomization/model_2949_encoder.pt"
+    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-10_17-15-24_training_lift_async_depth_PHASE_2_domain_randomization_increase/model_1300_encoder.pt"
     IMG_SIZE = 128
     device = env_cfg.sim.device
 
@@ -259,6 +259,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
+            # Get the policy obs tensor from TensorDict
+            obs_tensor = obs["policy"][0].cpu()  # first env, policy group
+
+            print(f"[obs] joint_pos:  {obs_tensor[0:9].numpy().round(3)}")
+            print(f"[obs] joint_vel:  {obs_tensor[9:18].numpy().round(3)}")
+            print(f"[obs] object_pos: {obs_tensor[18:21].numpy().round(3)}")
+            print(f"[obs] goal_pose:  {obs_tensor[21:28].numpy().round(3)}")
+            print(f"[obs] actions:    {obs_tensor[28:35].numpy().round(3)}")
+            print(f"[obs] depth_mean: {obs_tensor[35:99].mean().item():.4f}")
             actions = policy(obs)
             # env stepping
             obs, _, dones, _ = env.step(actions)

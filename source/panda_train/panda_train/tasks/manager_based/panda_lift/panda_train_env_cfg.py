@@ -45,10 +45,10 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import mdp as base_mdp
 
-PHASE = 1
+PHASE = 3
 IMG_SIZE = 128  # for depth image obs
 LATENT_DIM = 64
-END_STEP = 200  # number of steps over which to anneal out the object position term in obs
+END_STEP = 250  # number of steps over which to anneal out the object position term in obs
 
 ##
 # Depth Encoder
@@ -114,7 +114,7 @@ def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
 
     if PHASE == 2:
-        current_iter = env.common_step_counter // (env.num_envs * 96)
+        current_iter = env.common_step_counter // env.num_envs
         blend = max(0.0, 1.0 - current_iter / END_STEP)
         real_pos = mdp.object_position_in_robot_root_frame(
             env, robot_cfg=robot_cfg, object_cfg=object_cfg)
@@ -364,11 +364,11 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
 
         self.rewards.ee_height_penalty = RewTerm(
                 func=ee_height_penalty,
-                weight=1.0,
+                weight=3.0,
                 params={"min_height": 0.13}, 
         )
 
-        self.rewards.reaching_object.weight = 10.0        # was 1.0
+        self.rewards.reaching_object.weight = 5.0        # was 1.0
         self.rewards.lifting_object.weight = 20.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 10.0   # was default
     
