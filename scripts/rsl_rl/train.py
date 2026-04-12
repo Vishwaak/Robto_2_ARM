@@ -106,12 +106,13 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 logger = logging.getLogger(__name__)
 
 import panda_train.tasks  # noqa: F401
-from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
+# from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -172,6 +173,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
+
+    import panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg as env_module
+
+    
+    env_module.LOG_DIR = log_dir  
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -202,7 +208,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     start_time = time.time()
   
-    # should print the Phase 1 checkpoint path
+
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
@@ -224,30 +230,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     original_save = runner.save
 
     #monkey patch the save function to also save the encoder weights
-    def save_with_encoder(path):
-        original_save(path)
-        encoder_save_path = path.replace(".pt", "_encoder.pt")
-        if _lift_depth_encoder._encoder is not None:
-            torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_save_path)
-            print(f"[INFO] Encoder saved to: {encoder_save_path}")
-    runner.save = save_with_encoder
+    # def save_with_encoder(path):
+    #     original_save(path)
+    #     encoder_save_path = path.replace(".pt", "_encoder.pt")
+    #     if _lift_depth_encoder._encoder is not None:
+    #         torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_save_path)
+    #         print(f"[INFO] Encoder saved to: {encoder_save_path}")
+    # runner.save = save_with_encoder
     
-    encoder_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-09_22-28-51_training_lift_async_depth_PHASE_2_domain_randomization_increase/model_2649_encoder.pt"
+    # encoder_path = ""
    
-    IMG_SIZE = 128
-    if os.path.exists(encoder_path):
-        print(f"[INFO] Loading encoder weights from: {encoder_path}")
-        _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
-            torch.device("cuda:0"),
-            torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device="cuda:0")  # dummy input to init
-        )
-        _lift_depth_encoder._encoder.load_state_dict(
-            torch.load(encoder_path, map_location="cuda:0")
-        )
-        print("[INFO] Encoder weights loaded successfully.")
-    else:
-        print(f"[WARNING] Encoder weights not found at: {encoder_path}")
-        print("[WARNING] Encoder will start from random weights.")
+    # IMG_SIZE = 128
+    # if os.path.exists(encoder_path):
+    #     print(f"[INFO] Loading encoder weights from: {encoder_path}")
+    #     _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
+    #         torch.device("cuda:0"),
+    #         torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device="cuda:0")  # dummy input to init
+    #     )
+    #     _lift_depth_encoder._encoder.load_state_dict(
+    #         torch.load(encoder_path, map_location="cuda:0")
+    #     )
+    #     print("[INFO] Encoder weights loaded successfully.")
+    # else:
+    #     print(f"[WARNING] Encoder weights not found at: {encoder_path}")
+    #     print("[WARNING] Encoder will start from random weights.")
 
     
     
@@ -269,10 +275,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # close the simulator
 
 
-    if _lift_depth_encoder._encoder is not None:
-        encoder_path = os.path.join(log_dir, "encoder.pt")
-        torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_path)
-        print(f"[INFO] Depth encoder saved to: {encoder_path}")
+    # if _lift_depth_encoder._encoder is not None:
+    #     encoder_path = os.path.join(log_dir, "encoder.pt")
+    #     torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_path)
+    #     print(f"[INFO] Depth encoder saved to: {encoder_path}")
     
     env.close()
 

@@ -33,6 +33,8 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 
 from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose, randomize_object_scale
 
+import wandb
+import os
 
 
 from isaaclab.sensors import TiledCameraCfg  # isort: skip
@@ -45,92 +47,144 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import mdp as base_mdp
 
-PHASE = 3
+from panda_train.tasks.manager_based.panda_lift.network import DepthPositionPredictor
+
+
+PHASE = 1
 IMG_SIZE = 128  # for depth image obs
 LATENT_DIM = 64
 END_STEP = 250  # number of steps over which to anneal out the object position term in obs
-
-##
-# Depth Encoder
-##
-class DepthEncoderModifier:
-    """CNN encoder: (N, 1, H, W) depth → (N, 64) latent."""
-
-    def __init__(self, latent_dim: int = 64):
-        self.latent_dim = latent_dim
-        self._encoder = None
-
-    def _build_encoder(self, device, sample_input: torch.Tensor):
-        """Infer linear layer size from actual input shape."""
-        conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=2), nn.ELU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2), nn.ELU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=2), nn.ELU(),
-            nn.Flatten(),
-        ).to(device)
-        with torch.no_grad():
-            flat_dim = conv(sample_input[:1]).shape[-1]
-        return nn.Sequential(
-            conv,
-            nn.Linear(flat_dim, self.latent_dim), nn.ELU(),
-        ).to(device)
-
-    def __call__(self, depth: torch.Tensor) -> torch.Tensor:
-        if depth.dim() == 3:
-            depth = depth.unsqueeze(1)               # (N, H, W) → (N, 1, H, W)
-        depth = torch.clamp(depth, 0.01, 2.0) / 2.0  # normalize to [0, 1]
-        if self._encoder is None:
-            self._encoder = self._build_encoder(depth.device, depth)
-            print(f"[DepthEncoder] Initialized on {depth.device}, input: {depth.shape}")
-        return self._encoder(depth)                  # (N, 64)
+_last_save_step = 0
+SAVE_INTERVAL = 100*96
 
 
-# Module-level encoder instance shared across all envs
-_lift_depth_encoder = DepthEncoderModifier(latent_dim=LATENT_DIM)
+# Module-level instance
+_lift_depth_predictor = DepthPositionPredictor(latent_dim=64)
+_predictor_optimizer = torch.optim.Adam(_lift_depth_predictor.parameters(), lr=1e-3)
 
 
-def lift_depth_encoded(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+
+
+def _save_predictor(env, step: int) -> None:
     """
-    Custom obs term: fetches wrist depth image and encodes to 64D latent.
-    Returns: (N, 64) — compatible with flat obs concatenation.
+    Save predictor weights to the same log folder Isaac Lab uses.
+    Isaac Lab stores logs in env.cfg.sim.device... actually the
+    easiest way is to grab it from wandb.run.dir if available,
+    otherwise fall back to a local path.
     """
+    
+    os.makedirs(LOG_DIR, exist_ok=True)
+    path = os.path.join(LOG_DIR, f"depth_predictor_{step}.pt")
+    if wandb.run is not None:
+        wandb.define_metric("DepthPredictor/*", step_metric="predictor_step")
+    
 
-    num_envs = env.num_envs
-    device = env.device
+    print(path)
+    torch.save({
+        "model":     _lift_depth_predictor.state_dict(),
+        "optimizer": _predictor_optimizer.state_dict(),
+        "step":      step,
+    }, path)
+
+    # Also tell W&B to track the file as an artifact
+    if wandb.run is not None:
+        artifact = wandb.Artifact(
+            name="depth_predictor",
+            type="model",
+            description=f"Depth predictor weights at step {step}",
+        )
+        artifact.add_file(path)
+        wandb.log_artifact(artifact)
+
+    print(f"[DepthPredictor] Saved → {path}")
+
+
+def _get_predictor(device: torch.device):
+    """Lazy init — creates predictor on correct device on first call."""
+    global _lift_depth_predictor, _predictor_optimizer
+    if _lift_depth_predictor is None:
+        _lift_depth_predictor = DepthPositionPredictor(latent_dim=64).to(device)
+        _predictor_optimizer = torch.optim.Adam(
+            _lift_depth_predictor.parameters(), lr=1e-3
+        )
+        print(f"[DepthPredictor] Initialized on {device}")
+        # Verify
+        print(f"[DepthPredictor] is nn.Module: {isinstance(_lift_depth_predictor, nn.Module)}")
+        for name, p in _lift_depth_predictor.named_parameters():
+            print(f"  {name}: requires_grad={p.requires_grad} device={p.device}")
+    return _lift_depth_predictor, _predictor_optimizer
+
+def lift_depth_predict_pos(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    robot: SceneEntityCfg = SceneEntityCfg("robot"),
+    object: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    global _last_save_step
+
+    sensor = env.scene[sensor_cfg.name]
+    depth = sensor.data.output["depth"].squeeze(-1).unsqueeze(1)
+    depth = torch.clamp(depth, 0.1, 3.0) / 3.0
+
+    # Move to correct device on first call
+    if next(_lift_depth_predictor.parameters()).device != depth.device:
+        _lift_depth_predictor.to(depth.device)
 
     if PHASE == 1:
-        latent = torch.zeros((num_envs, LATENT_DIM), device=device)  # zeros, object_pos active
+        gt_pos = mdp.object_position_in_robot_root_frame(
+            env, robot_cfg=robot, object_cfg=object
+        )
+
+        _lift_depth_predictor.train()
+        depth = depth.detach().float()
+        gt_pos = gt_pos.detach()
+        pred = _lift_depth_predictor(depth)
+        loss = nn.functional.mse_loss(pred, gt_pos)
+        loss = torch.tensor(loss, requires_grad=True)
+        _predictor_optimizer.zero_grad()
+        loss.backward()
+        _predictor_optimizer.step()
+
+        step = env.common_step_counter// env.num_envs
+
+        # ── Log to W&B ────────────────────────────────────────────────────
+       
+        with torch.no_grad():
+            err = (pred - gt_pos).norm(dim=-1).mean().item()
+
+            # W&B logs alongside RSL-RL's existing metrics
+        if wandb.run is not None:
+            wandb.log({
+                "DepthPredictor/loss":     loss.item(),
+                "DepthPredictor/mean_err_m": err,
+                "DepthPredictor/predictor_step": step//96,
+                
+            }, commit=False)
+
+        # ── Save weights to Isaac Lab log folder ──────────────────────────
+        if env.common_step_counter > 0 and env.common_step_counter % (SAVE_INTERVAL * env.num_envs) == 0:
+            _save_predictor(env, env.common_step_counter)
+
+        return gt_pos.detach()
+
     else:
-        sensor = env.scene[sensor_cfg.name]
-        depth = sensor.data.output["depth"]          # (N, H, W, 1)
-        depth = depth.squeeze(-1).unsqueeze(1)       # (N, 1, H, W)
-        latent = _lift_depth_encoder(depth)            # (N, 64)
-    
-    return latent
+        _lift_depth_predictor.eval()
+        with torch.no_grad():
+            pred = _lift_depth_predictor(depth)
 
-def object_pos_or_zero(env, robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
-    real_pos = mdp.object_position_in_robot_root_frame(
-            env, robot_cfg=robot_cfg, object_cfg=object_cfg)
+        step = env.common_step_counter
+        if step % 500 == 0:
+            gt_pos = mdp.object_position_in_robot_root_frame(
+                env, robot_cfg=robot, object_cfg=object
+            )
+            err = (pred - gt_pos).norm(dim=-1).mean().item()
 
-    if PHASE == 2:
-        current_iter = env.common_step_counter // env.num_envs
-        blend = max(0.0, 1.0 - current_iter / END_STEP)
-        real_pos = mdp.object_position_in_robot_root_frame(
-            env, robot_cfg=robot_cfg, object_cfg=object_cfg)
+            if wandb.run is not None:
+                wandb.log({
+                    "DepthPredictor/phase2_err_m": err,
+                }, step=step)
 
-        if current_iter > END_STEP:
-            print("[object_pos_or_zero] Blending complete, fully unmasked object position.")
-            return torch.zeros((env.num_envs, 3), device=env.device)
-        
-        return blend * real_pos
-
-    elif PHASE == 1:
-        return real_pos
-
-    else:
-        return torch.zeros((env.num_envs, 3), device=env.device)
-
+        return pred.detach()
 ##
 # Environment configuration
 ##
@@ -165,16 +219,19 @@ class CriticCfg(ObsGroup):
 class PolicyCfg(ObsGroup):
     joint_pos    = ObsTerm(func=mdp.joint_pos_rel)
     joint_vel    = ObsTerm(func=mdp.joint_vel_rel)
-    object_pos = ObsTerm(
-            func=object_pos_or_zero, 
-            params={"robot_cfg": SceneEntityCfg("robot"),"object_cfg": SceneEntityCfg("object"),},)
     target_object_position = ObsTerm(                         # same name as original
         func=mdp.generated_commands,
         params={"command_name": "object_pose"},
     )
     actions      = ObsTerm(func=mdp.last_action)
-    depth_image  = ObsTerm(func=lift_depth_encoded,
-                           params={"sensor_cfg": SceneEntityCfg("wrist_camera")})
+    object_pos = ObsTerm(
+            func=lift_depth_predict_pos, 
+            params={
+            "sensor_cfg": SceneEntityCfg("wrist_camera"), 
+            "robot": SceneEntityCfg("robot"),
+            "object": SceneEntityCfg("object"), },)
+    # depth_image  = ObsTerm(func=lift_depth_encoded,
+    #                        params={"sensor_cfg": SceneEntityCfg("wrist_camera")})
 
     def __post_init__(self):
         self.enable_corruption = True   # add noise to actor obs for robustness
@@ -312,7 +369,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "object_cfg": SceneEntityCfg("table"),
-                "scale_range": (0.8, 1.4),  # wider/narrower table,
+                "scale_range": (0.8, 1.5),  # wider/narrower table,
                 "object_type": "table"
             },
         )
@@ -322,8 +379,8 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "pose_range": {
-                    "x": (-0.45, 0.45),
-                    "y": (-0.4, 0.4),
+                    "x": (-0.35, 0.35),
+                    "y": (-0.3, 0.3),
                     "z": (0.0, 0.0),
                 },
                 "velocity_range": {},
@@ -353,14 +410,6 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 ),
             },
 )
-
-        # --- Contact Sensor ---
-        # self.scene.contact_sensor = ContactSensorCfg(
-        #     prim_path="{ENV_REGEX_NS}/Robot/.*",
-        #     update_period=0.0,
-        #     history_length=3,
-        #     debug_vis=False,
-        # )
 
         self.rewards.ee_height_penalty = RewTerm(
                 func=ee_height_penalty,
