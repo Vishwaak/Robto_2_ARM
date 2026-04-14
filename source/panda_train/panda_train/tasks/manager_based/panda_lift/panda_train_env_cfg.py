@@ -33,6 +33,9 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 
 from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose, randomize_object_scale
 
+import torch
+from collections import deque
+
 import wandb
 import os
 
@@ -47,7 +50,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import mdp as base_mdp
 
-from panda_train.tasks.manager_based.panda_lift.network import DepthPositionPredictor
+from panda_train.tasks.manager_based.panda_lift.network import DepthPositionPredictor, LatentProbe, CharbonnierLoss
 
 
 PHASE = 1
@@ -56,14 +59,32 @@ LATENT_DIM = 64
 END_STEP = 250  # number of steps over which to anneal out the object position term in obs
 _last_save_step = 0
 SAVE_INTERVAL = 100*96
-
+BUFFER_SIZE = 128
 
 # Module-level instance
+
+depth_predictor_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-14_00-19-30_training_lift_depth_pred_joint/depth_predictor_4200.pt"
 _lift_depth_predictor = DepthPositionPredictor(latent_dim=64)
-_predictor_optimizer = torch.optim.Adam(_lift_depth_predictor.parameters(), lr=1e-3)
+_predictor_optimizer = torch.optim.Adam(_lift_depth_predictor.parameters(), lr=3e-4)
+_latent_probe = LatentProbe()
 
+_depth_buffer     = deque(maxlen=BUFFER_SIZE)
+_joint_buffer     = deque(maxlen=BUFFER_SIZE)
+_gt_buffer        = deque(maxlen=BUFFER_SIZE)
 
+_charbonnier          = CharbonnierLoss(eps=1e-3)
 
+if os.path.exists(depth_predictor_path):
+    checkpoint = torch.load(depth_predictor_path, map_location="cuda")
+    _lift_depth_predictor.load_state_dict(checkpoint["model"])
+    _lift_depth_predictor.to("cuda")
+    _predictor_optimizer.load_state_dict(checkpoint["optimizer"])
+    # move optimizer state to GPU
+    for state in _predictor_optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.cuda()
+    print(f"[DepthPredictor] Loaded weights from {depth_predictor_path}")
 
 def _save_predictor(env, step: int) -> None:
     """
@@ -98,7 +119,44 @@ def _save_predictor(env, step: int) -> None:
 
     print(f"[DepthPredictor] Saved → {path}")
 
-
+def collect_depth_data(
+    env,
+    env_ids: torch.Tensor,
+    robot:  SceneEntityCfg = SceneEntityCfg("robot"),
+    object: SceneEntityCfg = SceneEntityCfg("object"),
+) -> None:
+    sensor    = env.scene["wrist_camera"]
+    raw_depth = sensor.data.output["depth"]          # (N, H, W, 1)
+ 
+    depth = (
+        raw_depth
+        .squeeze(-1)                                  # (N, H, W)
+        .unsqueeze(1)                                 # (N, 1, H, W)
+        .float()
+        .clamp(0.1, 3.0)
+        .div(3.0)
+        .cpu()
+        .detach()
+    )
+ 
+    joint_pos = (
+        mdp.joint_pos_rel(env)
+        .float()
+        .cpu()
+        .detach()
+    )
+ 
+    gt_pos = (
+        mdp.object_position_in_robot_root_frame(env, robot_cfg=robot, object_cfg=object)
+        .float()
+        .cpu()
+        .detach()
+    )
+ 
+    _depth_buffer.append(depth)
+    _joint_buffer.append(joint_pos)
+    _gt_buffer.append(gt_pos)
+ 
 def _get_predictor(device: torch.device):
     """Lazy init — creates predictor on correct device on first call."""
     global _lift_depth_predictor, _predictor_optimizer
@@ -116,48 +174,61 @@ def _get_predictor(device: torch.device):
 
 def lift_depth_predict_pos(
     env,
-    sensor_cfg: SceneEntityCfg,
+    env_ids: torch.Tensor,
     robot: SceneEntityCfg = SceneEntityCfg("robot"),
     object: SceneEntityCfg = SceneEntityCfg("object"),
 ) -> torch.Tensor:
     global _last_save_step
 
-    sensor = env.scene[sensor_cfg.name]
+    sensor = env.scene["wrist_camera"]
     depth = sensor.data.output["depth"].squeeze(-1).unsqueeze(1)
     depth = torch.clamp(depth, 0.1, 3.0) / 3.0
 
+    global _lift_depth_predictor
     # Move to correct device on first call
+    print(f"Depth tensor device: {depth.device}")
     if next(_lift_depth_predictor.parameters()).device != depth.device:
+        
         _lift_depth_predictor.to(depth.device)
 
     if PHASE == 1:
         gt_pos = mdp.object_position_in_robot_root_frame(
             env, robot_cfg=robot, object_cfg=object
         )
+        
+        charbonnier_loss = CharbonnierLoss()
 
         _lift_depth_predictor.train()
-        depth = depth.detach().float()
-        gt_pos = gt_pos.detach()
-        pred = _lift_depth_predictor(depth)
-        loss = nn.functional.mse_loss(pred, gt_pos)
-        loss = torch.tensor(loss, requires_grad=True)
-        _predictor_optimizer.zero_grad()
-        loss.backward()
-        _predictor_optimizer.step()
-
+        torch.set_grad_enabled(True)
+        with torch.enable_grad():
+            depth = depth.float().detach().requires_grad_(False)
+            joint_pos = mdp.joint_pos_rel(env).float().detach()
+            gt_pos = gt_pos.detach().float()
+            pred_pos = _lift_depth_predictor(depth, joint_pos)
+            print(depth.requires_grad, joint_pos.requires_grad, gt_pos.requires_grad, pred_pos.requires_grad)
+            print(depth.grad_fn, joint_pos.grad_fn, gt_pos.grad_fn, pred_pos.grad_fn)
+            loss = charbonnier_loss(pred_pos, gt_pos)
+            loss = torch.tensor(loss, requires_grad=True)  # ensure loss has grad
+            # loss = torch.tensor(loss, requires_grad=True)
+            _predictor_optimizer.zero_grad()
+            loss.backward()
+            for p in _lift_depth_predictor.parameters():
+                print(p.grad)
+            _predictor_optimizer.step()
+        torch.set_grad_enabled(False)
         step = env.common_step_counter// env.num_envs
-
+        # probe_loss, probe_error = _latent_probe.update(latent, gt_pos)
         # ── Log to W&B ────────────────────────────────────────────────────
        
-        with torch.no_grad():
-            err = (pred - gt_pos).norm(dim=-1).mean().item()
+        # with torch.no_grad():
+        #     err = (pred - gt_pos).norm(dim=-1).mean().item()
 
             # W&B logs alongside RSL-RL's existing metrics
         if wandb.run is not None:
             wandb.log({
-                "DepthPredictor/loss":     loss.item(),
-                "DepthPredictor/mean_err_m": err,
-                "DepthPredictor/predictor_step": step//96,
+                "Probe/loss":     loss.item(),
+                "Probe/mean_err_m": torch.norm(pred_pos - gt_pos, dim=-1).mean().item(),
+                "Probe/predictor_step": step//96,
                 
             }, commit=False)
 
@@ -185,6 +256,87 @@ def lift_depth_predict_pos(
                 }, step=step)
 
         return pred.detach()
+
+def train_depth_predictor(path: str) -> dict:
+    if len(_depth_buffer) < BUFFER_SIZE:
+        return {}
+
+    depth     = torch.cat(list(_depth_buffer), dim=0)
+    joint_pos = torch.cat(list(_joint_buffer), dim=0)
+    gt_pos    = torch.cat(list(_gt_buffer),    dim=0)
+
+    device = next(_lift_depth_predictor.parameters()).device
+    batch_size = 2048
+    indices = torch.randperm(len(depth))
+
+    _lift_depth_predictor.train()
+    total_loss = 0.0
+    total_err  = 0.0
+    n_batches  = 0
+
+    for start in range(0, len(depth), batch_size):
+        idx = indices[start:start + batch_size]
+        d   = depth[idx].to(device)
+        j   = joint_pos[idx].to(device)
+        gt  = gt_pos[idx].to(device)
+
+        pred = _lift_depth_predictor(d, j)
+        loss = _charbonnier(pred, gt)
+
+        _predictor_optimizer.zero_grad()
+        loss.backward()
+        _predictor_optimizer.step()
+
+        with torch.no_grad():
+            total_loss += loss.item()
+            total_err  += (pred - gt).norm(dim=-1).mean().item()
+            n_batches  += 1
+
+    # no clear — deque rolls naturally
+
+    if path is not None:
+        torch.save({
+            "model":     _lift_depth_predictor.state_dict(),
+            "optimizer": _predictor_optimizer.state_dict(),
+        }, path)
+
+    return {
+        "DepthPredictor/loss":     total_loss / n_batches,
+        "DepthPredictor/mean_err": total_err  / n_batches,
+    }
+def pred_obj_pos( env,
+    robot: SceneEntityCfg = SceneEntityCfg("robot"),
+    object: SceneEntityCfg = SceneEntityCfg("object"),) -> torch.Tensor:
+    sensor = env.scene["wrist_camera"]
+    depth = sensor.data.output["depth"].squeeze(-1).unsqueeze(1).float()
+    depth = torch.nan_to_num(depth, nan=0.0, posinf=3.0, neginf=0.0)
+    depth = torch.clamp(depth, 0.1, 3.0) / 3.0
+    joint_pos = mdp.joint_pos_rel(env).float().detach()
+    _lift_depth_predictor.to(depth.device)
+    _lift_depth_predictor.eval()
+    gt_pos = mdp.object_position_in_robot_root_frame(env, robot_cfg=robot, object_cfg=object).float().detach()
+
+    with torch.no_grad():
+        pred = _lift_depth_predictor(depth, joint_pos)
+        error = torch.norm(pred - gt_pos, dim=-1).mean().item()
+
+        if error > 0.08:
+            alpha = 0.2
+        elif error > 0.05:
+            alpha = 0.5
+        elif error > 0.03:
+            alpha = 0.8
+        else:
+            alpha = 1.0
+            
+    value = alpha * pred.detach() + (1 - alpha) * gt_pos.detach()
+    print("using pred pos with alpha {:.2f}, error {:.3f}".format(alpha, error))
+    return value
+
+def noisy_object_pos(env, robot, object, noise_std=0.05):
+    gt_pos = mdp.object_position_in_robot_root_frame(env, robot_cfg=robot, object_cfg=object)
+    noise = torch.randn_like(gt_pos) * noise_std
+    return (gt_pos + noise).clamp_(-1.0, 1.0)
 ##
 # Environment configuration
 ##
@@ -224,15 +376,24 @@ class PolicyCfg(ObsGroup):
         params={"command_name": "object_pose"},
     )
     actions      = ObsTerm(func=mdp.last_action)
-    object_pos = ObsTerm(
-            func=lift_depth_predict_pos, 
-            params={
-            "sensor_cfg": SceneEntityCfg("wrist_camera"), 
-            "robot": SceneEntityCfg("robot"),
-            "object": SceneEntityCfg("object"), },)
-    # depth_image  = ObsTerm(func=lift_depth_encoded,
-    #                        params={"sensor_cfg": SceneEntityCfg("wrist_camera")})
+    # object_pos   = ObsTerm(
+    #     func=mdp.object_position_in_robot_root_frame)
+    # object_pos = ObsTerm(
+    #     func=noisy_object_pos,
+    #     params={
+    #         "robot": SceneEntityCfg("robot"),
+    #         "object": SceneEntityCfg("object"),
+    #         "noise_std": 0.09
+    #     }
+    # )
 
+    object_pos = ObsTerm(
+        func=pred_obj_pos,
+        params={
+            "robot": SceneEntityCfg("robot"),
+            "object": SceneEntityCfg("object"),
+        }
+    )
     def __post_init__(self):
         self.enable_corruption = True   # add noise to actor obs for robustness
         self.concatenate_terms = True
@@ -379,8 +540,8 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "pose_range": {
-                    "x": (-0.35, 0.35),
-                    "y": (-0.3, 0.3),
+                    "x": (-0.1, 0.1),
+                    "y": (-0.1, 0.1),
                     "z": (0.0, 0.0),
                 },
                 "velocity_range": {},
@@ -388,6 +549,24 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             },
         )
         
+        self.events.train_predictor = EventTerm(
+            func=collect_depth_data,
+            mode="interval",
+            interval_range_s=(0.0,0.0),  # every step
+                params={
+                "robot": SceneEntityCfg("robot"),
+                "object": SceneEntityCfg("object"),
+            },
+        )
+
+        self.events.collect_at_reset = EventTerm(
+            func=collect_depth_data,
+            mode="reset",
+            params={
+                "robot": SceneEntityCfg("robot"),
+                "object": SceneEntityCfg("object"),
+            },
+        )
         self.observations.critic = CriticCfg()
 
         self.observations.policy = PolicyCfg() 
@@ -417,9 +596,20 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 params={"min_height": 0.13}, 
         )
 
-        self.rewards.reaching_object.weight = 5.0        # was 1.0
+        # self.rewards.gripper_close_near_object = RewTerm(
+        #         func=mdp.gripper_close_near_object,
+        #         weight=2.0,
+        #         params={"std": 0.1,},
+        # )
+        self.rewards.grasp_and_lift_bonus = RewTerm(
+                    func=mdp.grasp_and_lift_bonus,
+                    weight=25.0,
+                    params={"lift_height": 0.05},
+        )
+
+        self.rewards.reaching_object.weight = 1.0        # was 1.0
         self.rewards.lifting_object.weight = 20.0        # was 15.0
-        self.rewards.object_goal_tracking.weight = 10.0   # was default
+        self.rewards.object_goal_tracking.weight = 15.0   # was default
     
 @configclass
 class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):

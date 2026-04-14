@@ -106,7 +106,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 logger = logging.getLogger(__name__)
 
 import panda_train.tasks  # noqa: F401
-# from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_encoder
+
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -114,6 +114,56 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
+from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import train_depth_predictor
+import wandb
+
+class DepthPredictorRunner(OnPolicyRunner):
+    def learn(self, num_learning_iterations, init_at_random_ep_len=False):
+        if init_at_random_ep_len:
+            self.env.episode_length_buf = torch.randint_like(
+                self.env.episode_length_buf, high=int(self.env.max_episode_length)
+            )
+
+        obs = self.env.get_observations().to(self.device)
+        self.alg.train_mode()
+        self.logger.init_logging_writer()
+
+        start_it = self.current_learning_iteration
+        total_it = start_it + num_learning_iterations
+        for it in range(start_it, total_it):
+            start = time.time()
+            with torch.inference_mode():
+                for _ in range(self.cfg["num_steps_per_env"]):
+                    actions = self.alg.act(obs)
+                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                    obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+                    self.alg.process_env_step(obs, rewards, dones, extras)
+                    self.logger.process_env_step(rewards, dones, extras, None)
+                collect_time = time.time() - start
+                start = time.time()
+                self.alg.compute_returns(obs)
+
+            loss_dict = self.alg.update()
+
+            # train depth predictor here — outside inference_mode
+            save_path = None
+            if it % 50 == 0:  # train depth predictor every 10 iterations
+                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
+                save_path = os.path.join(self.logger.log_dir, f"depth_predictor_{it}.pt")
+
+            metrics = train_depth_predictor(save_path)
+            if metrics and wandb.run is not None:
+                wandb.log(metrics, commit=False)
+
+            learn_time = time.time() - start
+            self.current_learning_iteration = it
+            self.logger.log(
+                it=it, start_it=start_it, total_it=total_it,
+                collect_time=collect_time, learn_time=learn_time,
+                loss_dict=loss_dict, learning_rate=self.alg.learning_rate,
+                action_std=self.alg.get_policy().output_std,
+                rnd_weight=None,
+            )
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -219,7 +269,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner = DepthPredictorRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
