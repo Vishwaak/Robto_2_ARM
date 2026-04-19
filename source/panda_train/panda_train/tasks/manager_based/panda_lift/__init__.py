@@ -17,6 +17,15 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Panda-Lift-Depth-Distill-v0",      # separate ID
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": FrankaCubeLiftDepthEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DistillationRunnerCfg",
+    },
+)
+
+gym.register(
     id="Isaac-Panda-Lift-Depth-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={

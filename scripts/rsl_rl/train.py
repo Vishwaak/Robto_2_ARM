@@ -9,7 +9,7 @@
 
 import argparse
 import sys
-
+import matplotlib.pyplot as plt
 
 
 from isaaclab.app import AppLauncher
@@ -86,6 +86,7 @@ import gymnasium as gym
 import torch
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
+
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -114,56 +115,22 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
-from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import train_depth_predictor
+# from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import train_depth_predictor
 import wandb
+import torch.nn as nn
 
-class DepthPredictorRunner(OnPolicyRunner):
-    def learn(self, num_learning_iterations, init_at_random_ep_len=False):
-        if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
-            )
 
-        obs = self.env.get_observations().to(self.device)
-        self.alg.train_mode()
-        self.logger.init_logging_writer()
+import torch
+def check_cnn_grads(runner):
+    for name, param in runner.alg.student.named_parameters():
+        if param.grad is not None:
+            print(f"{name}: grad_mean={param.grad.abs().mean():.6f}")
+        else:
+            print(f"{name}: NO GRAD")
 
-        start_it = self.current_learning_iteration
-        total_it = start_it + num_learning_iterations
-        for it in range(start_it, total_it):
-            start = time.time()
-            with torch.inference_mode():
-                for _ in range(self.cfg["num_steps_per_env"]):
-                    actions = self.alg.act(obs)
-                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)
-                    self.alg.process_env_step(obs, rewards, dones, extras)
-                    self.logger.process_env_step(rewards, dones, extras, None)
-                collect_time = time.time() - start
-                start = time.time()
-                self.alg.compute_returns(obs)
+# Hook it to run after first update
 
-            loss_dict = self.alg.update()
 
-            # train depth predictor here — outside inference_mode
-            save_path = None
-            if it % 50 == 0:  # train depth predictor every 10 iterations
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
-                save_path = os.path.join(self.logger.log_dir, f"depth_predictor_{it}.pt")
-
-            metrics = train_depth_predictor(save_path)
-            if metrics and wandb.run is not None:
-                wandb.log(metrics, commit=False)
-
-            learn_time = time.time() - start
-            self.current_learning_iteration = it
-            self.logger.log(
-                it=it, start_it=start_it, total_it=total_it,
-                collect_time=collect_time, learn_time=learn_time,
-                loss_dict=loss_dict, learning_rate=self.alg.learning_rate,
-                action_std=self.alg.get_policy().output_std,
-                rnd_weight=None,
-            )
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -236,7 +203,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = multi_agent_to_single_agent(env)
 
     # save resume path before creating a new log_dir
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if agent_cfg.resume or "Distillation" in agent_cfg.algorithm.class_name:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
     
     print(f"[INFO] Environment created: {env}")
@@ -269,7 +236,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = DepthPredictorRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
@@ -278,57 +245,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
     original_save = runner.save
-
-    #monkey patch the save function to also save the encoder weights
-    # def save_with_encoder(path):
-    #     original_save(path)
-    #     encoder_save_path = path.replace(".pt", "_encoder.pt")
-    #     if _lift_depth_encoder._encoder is not None:
-    #         torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_save_path)
-    #         print(f"[INFO] Encoder saved to: {encoder_save_path}")
-    # runner.save = save_with_encoder
-    
-    # encoder_path = ""
    
-    # IMG_SIZE = 128
-    # if os.path.exists(encoder_path):
-    #     print(f"[INFO] Loading encoder weights from: {encoder_path}")
-    #     _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
-    #         torch.device("cuda:0"),
-    #         torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device="cuda:0")  # dummy input to init
-    #     )
-    #     _lift_depth_encoder._encoder.load_state_dict(
-    #         torch.load(encoder_path, map_location="cuda:0")
-    #     )
-    #     print("[INFO] Encoder weights loaded successfully.")
-    # else:
-    #     print(f"[WARNING] Encoder weights not found at: {encoder_path}")
-    #     print("[WARNING] Encoder will start from random weights.")
-
-    
-    
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
        
 
-    # dump the configuration into log-directory
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    with torch.no_grad():
+        obs, _ = env.reset()
+        depth = obs["depth"]  # [num_envs, 1, H, W]
+
+    # Take first env
+    img = depth[0, 0].cpu().numpy()
+    print("Depth min:", img.min())
+    print("Depth max:", img.max())
+    print("Depth mean:", img.mean())
+    print("Depth shape:", img.shape)
+
+    
+   
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    # run training
+    
+   
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 
-    # close the simulator
-
-
-    # if _lift_depth_encoder._encoder is not None:
-    #     encoder_path = os.path.join(log_dir, "encoder.pt")
-    #     torch.save(_lift_depth_encoder._encoder.state_dict(), encoder_path)
-    #     print(f"[INFO] Depth encoder saved to: {encoder_path}")
+   
     
     env.close()
 

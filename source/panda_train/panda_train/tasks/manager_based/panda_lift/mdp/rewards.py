@@ -77,3 +77,19 @@ def ee_height_penalty(
     penalty = torch.clamp(min_height - ee_height, min=0.0)
     # print(f"EE height: min={ee_height.min().item():.4f} max={ee_height.max().item():.4f} mean={ee_height.mean().item():.4f}")
     return -penalty
+
+
+def ee_orientation_upright_reward(env, lift_height: float = 0.1) -> torch.Tensor:
+    """Reward upright gripper orientation only when cube is lifted."""
+    # Check if cube is lifted
+    object_pos = env.scene["object"].data.root_pos_w
+    cube_lifted = (object_pos[:, 2] > lift_height).float()  # [N]
+    
+    # EE z-axis in world frame
+    ee_quat = env.scene["ee_frame"].data.target_quat_w[:, 0]
+    w, x, y, z = ee_quat[:, 0], ee_quat[:, 1], ee_quat[:, 2], ee_quat[:, 3]
+    ee_z_world_z = 1 - 2*(x*x + y*y)  # z component of EE z-axis
+    
+    # Reward pointing down (-z) only when lifted
+    reward = -ee_z_world_z * cube_lifted
+    return reward

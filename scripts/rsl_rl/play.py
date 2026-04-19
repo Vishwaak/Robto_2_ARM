@@ -96,8 +96,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import panda_train.tasks  # noqa: F401
 
-from panda_train.tasks.manager_based.panda_lift.network import DepthPositionPredictor
-from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import pred_obj_pos
+
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -169,30 +168,41 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     depth_state = {"writer": None}  
 
     def save_depth_frame(env):
-        print("[INFO] Saving depth frame...")
+        # Unwrap through all wrappers to get Isaac env
+        isaac_env = env.unwrapped
+        while hasattr(isaac_env, 'env'):
+            isaac_env = isaac_env.env
+            if hasattr(isaac_env, 'scene'):
+                break
+
+        depth = isaac_env.scene["wrist_camera"].data.output["distance_to_image_plane"]
         
-        depth = env.unwrapped.scene["wrist_camera"].data.output["depth"]
-        frame = depth[0, :, :, 0].cpu().numpy()
+        if depth.shape[-1] == 1:
+            frame = depth[0, :, :, 0].cpu().numpy()
+        else:
+            frame = depth[0, 0].cpu().numpy()
+        
+        # Handle inf/nan
+        frame = np.where(np.isfinite(frame), frame, 3.0)
         frame = np.clip(frame, 0.1, 3.0)
         frame = ((frame - 0.1) / (3.0 - 0.1) * 255).astype(np.uint8)
         frame_colored = cv2.applyColorMap(frame, cv2.COLORMAP_JET)
-        print(f"Depth min={frame.min():.3f} max={frame.max():.3f} shape={frame.shape}")
 
         if depth_state["writer"] is None:
             h, w = frame_colored.shape[:2]
-            print( os.path.join(depth_output_dir, "depth_cam.avi"))
             depth_state["writer"] = cv2.VideoWriter(
                 os.path.join(depth_output_dir, "depth_cam.avi"),
                 fourcc, 30, (w, h)
             )
-            print(f"Writer opened: {depth_state['writer'].isOpened()}")
+            print(f"[INFO] Depth writer opened: {depth_state['writer'].isOpened()}, size=({w},{h})")
+        
         depth_state["writer"].write(frame_colored)
 
 
-    from panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg import _lift_depth_predictor, DepthPositionPredictor
 
-    pred_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-10_17-15-24_training_lift_async_depth_PHASE_2_domain_randomization_increase/model_1300_encoder.pt"
-    IMG_SIZE = 128
+
+    # pred_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-10_17-15-24_training_lift_async_depth_PHASE_2_domain_randomization_increase/model_1300_encoder.pt"
+    # IMG_SIZE = 128
     device = env_cfg.sim.device
 
     # if os.path.exists(encoder_path):
@@ -209,18 +219,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # else:
     #     print(f"[WARNING] Encoder not found: {encoder_path}")
 
-    predictor_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-14_00-19-30_training_lift_depth_pred_joint/depth_predictor_4000.pt"
-    import panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg as env_module
+    # predictor_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-14_00-19-30_training_lift_depth_pred_joint/depth_predictor_4000.pt"
+    # import panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg as env_module
 
-    print("[INFO] Depth predictor loaded.")
-    if os.path.exists(predictor_path):
-        checkpoint = torch.load(predictor_path, map_location=device)
-        env_module._lift_depth_predictor.load_state_dict(checkpoint["model"])
-        env_module._lift_depth_predictor.to(device)
-        env_module._lift_depth_predictor.eval()
-        print("[INFO] Depth predictor loaded.")
-    else:
-        print(f"[WARNING] Depth predictor not found: {predictor_path}")
+    # print("[INFO] Depth predictor loaded.")
+    # if os.path.exists(predictor_path):
+    #     checkpoint = torch.load(predictor_path, map_location=device)
+    #     env_module._lift_depth_predictor.load_state_dict(checkpoint["model"])
+    #     env_module._lift_depth_predictor.to(device)
+    #     env_module._lift_depth_predictor.eval()
+    #     print("[INFO] Depth predictor loaded.")
+    # else:
+    #     print(f"[WARNING] Depth predictor not found: {predictor_path}")
 
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
