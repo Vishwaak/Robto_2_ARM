@@ -24,7 +24,7 @@ def randomize_camera_pose(
 
     for env_id in env_ids.tolist():
         # Build prim path for this env's camera
-        cam_path = f"/World/envs/env_{env_id}/Robot/panda_hand/wrist_camera"
+        cam_path = f"/World/envs/env_{env_id}/Robot/fr3_hand/wrist_camera"
         prim = stage.GetPrimAtPath(cam_path)
 
         if not prim.IsValid():
@@ -91,7 +91,7 @@ def randomize_camera_pose(
 
     for env_id in env_ids.tolist():
         # Build prim path for this env's camera
-        cam_path = f"/World/envs/env_{env_id}/Robot/panda_hand/wrist_camera"
+        cam_path = f"/World/envs/env_{env_id}/Robot/fr3_hand/wrist_camera"
         prim = stage.GetPrimAtPath(cam_path)
 
         if not prim.IsValid():

@@ -28,6 +28,7 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 ##
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort: skip
+# from isaaclab_assets.robots.franka import FRANKA_FR3_CFG  # isort: skip
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 
@@ -52,6 +53,8 @@ from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.envs import mdp as base_mdp
 
 from panda_train.tasks.manager_based.panda_lift.network import DepthPositionPredictor, LatentProbe, CharbonnierLoss
+
+from panda_train.tasks.manager_based.panda_lift.usd.franka_fr3_cfg import FRANKA_FR3_CFG
 
 IMG_SIZE = 128
 
@@ -199,26 +202,26 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.sim.render.enable_translucency = False
 
         # --- Robot ---
-        self.scene.robot = FRANKA_PANDA_CFG.replace(
+        self.scene.robot = FRANKA_FR3_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
-        spawn=FRANKA_PANDA_CFG.spawn.replace(
+        spawn=FRANKA_FR3_CFG.spawn.replace(
             activate_contact_sensors=True
                 ),
             )
 
         # --- Actions ---
         self.actions.arm_action = mdp.JointPositionActionCfg(
-            asset_name="robot", joint_names=["panda_joint.*"], scale=0.5, use_default_offset=True
+            asset_name="robot", joint_names=["fr3_joint.*"], scale=0.5, use_default_offset=True
         )
         self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
             asset_name="robot",
-            joint_names=["panda_finger.*"],
-            open_command_expr={"panda_finger_.*": 0.04},
-            close_command_expr={"panda_finger_.*": 0.0},
+            joint_names=["fr3_finger_joint1"],
+            open_command_expr={"fr3_finger_joint1": 0.04},
+            close_command_expr={"fr3_finger_joint1": 0.0},
         )
 
         # --- End effector ---
-        self.commands.object_pose.body_name = "panda_hand"
+        self.commands.object_pose.body_name = "fr3_hand"
 
         # --- Object ---
         self.scene.object = RigidObjectCfg(
@@ -243,28 +246,29 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
         marker_cfg.prim_path = "/Visuals/FrameTransformer"
         self.scene.ee_frame = FrameTransformerCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+            prim_path="{ENV_REGEX_NS}/Robot/fr3_link0",
             debug_vis=False,
             visualizer_cfg=marker_cfg,
             target_frames=[
                 FrameTransformerCfg.FrameCfg(
-                    prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+                    prim_path="{ENV_REGEX_NS}/Robot/fr3_hand",
                     name="end_effector",
-                    offset=OffsetCfg(pos=[0.0, 0.0, 0.1034]),
+                    offset=OffsetCfg(pos=[0.0, 0.0, 0.103]),
                 ),
             ],
         )
 
+        
         # --- Wrist Camera ---
         # Attached to panda_hand so it moves with the arm
         self.scene.wrist_camera = TiledCameraCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_camera",
+                prim_path="{ENV_REGEX_NS}/Robot/fr3_hand/wrist_camera",
                 offset=TiledCameraCfg.OffsetCfg(
                     pos=(0.059, -0.069, 0.0),  # 50mm forward, 65mm down from drawing
                    rot=(1.0, 0.0, 0.0, 0.0),
                     convention="ros",
                 ),
-                data_types=["depth","distance_to_image_plane"],
+                data_types=["depth","distance_to_image_plane","rgba"],
                 spawn=sim_utils.PinholeCameraCfg(
                     focal_length=1.93,
                     horizontal_aperture=3.896,
@@ -299,7 +303,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "object_cfg": SceneEntityCfg("object"),
-                "scale_range": (0.7, 1.0),  # 70% to 100% of original size
+                "scale_range": (0.7, 1.2),  # 70% to 100% of original size
                 "object_type": "cube"
             },
         )
@@ -319,8 +323,8 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "pose_range": {
-                    "x": (-0.1, 0.1),
-                    "y": (-0.1, 0.1),
+                    "x": (-0.2, 0.2),
+                    "y": (-0.15, 0.15),
                     "z": (0.0, 0.0),
                 },
                 "velocity_range": {},
@@ -342,8 +346,6 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         
         self.observations.depth = DepthObsCfg()
         
-        
-
         self.scene.contact_sensor = ContactSensorCfg(
                 prim_path="{ENV_REGEX_NS}/Robot/.*",
                 update_period=0.0,
@@ -355,10 +357,10 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.terminations.table_contact = DoneTerm(
             func=base_mdp.illegal_contact,
             params={
-                "threshold": 5.0,
+                "threshold": 10.0,
                 "sensor_cfg": SceneEntityCfg(
                     "contact_sensor",
-                    body_names=["panda_hand"],
+                    body_names=["fr3_hand"],
                 ),
             },
 )
@@ -366,35 +368,35 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
         self.rewards.ee_height_penalty = RewTerm(
                 func=ee_height_penalty,
                 weight=3.0,
-                params={"min_height": 0.13}, 
+                params={"min_height": 0.02}, 
         )
 
-        self.rewards.gripper_close_near_object = RewTerm(
-                func=mdp.gripper_close_near_object,
-                weight=2.0,
-                params={"std": 0.1,},
-        )
+        # self.rewards.gripper_close_near_object = RewTerm(
+        #         func=mdp.gripper_close_near_object,
+        #         weight=2.0,
+        #         params={"std": 0.1,},
+        # )
         self.rewards.grasp_and_lift_bonus = RewTerm(
                     func=mdp.grasp_and_lift_bonus,
-                    weight=25.0,
+                    weight=50.0,
                     params={"lift_height": 0.05},
         )
 
-        self.rewards.ee_orientation_upright_reward = RewTerm (
-                    func=ee_orientation_upright_reward,
-                    weight = 15.0,
-                    params={"lift_height": 0.02}
-        )
+        # self.rewards.ee_orientation_upright_reward = RewTerm (
+        #             func=ee_orientation_upright_reward,
+        #             weight = 15.0,
+        #             params={"lift_height": 0.02}
+        # )
         self.curriculum.action_rate = CurrTerm(
-            func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1.0e-1, "num_steps": 200000}
+            func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1.0e-1, "num_steps": 400000}
         )
 
         self.curriculum.joint_vel = CurrTerm(
-            func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1.0e-1, "num_steps": 200000}
+            func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1.0e-1, "num_steps": 400000}
         )
 
         self.rewards.reaching_object.weight = 1.0        # was 1.0
-        self.rewards.lifting_object.weight = 20.0        # was 15.0
+        self.rewards.lifting_object.weight = 25.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 15.0   # was default
     
 @configclass
@@ -406,7 +408,9 @@ class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):
         self.observations.student.enable_corruption = False
         self.observations.depth.enable_corruption = False
         self.events.randomize_camera = None
-    
+
+        self.observations.policy = StudentObsCfg()
+
         self.events.reset_object_position = EventTerm(
             func=mdp.reset_root_state_uniform,
             mode="reset",

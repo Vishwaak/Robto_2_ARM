@@ -97,7 +97,90 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import panda_train.tasks  # noqa: F401
 
 
+import csv
+import os
+import torch
 
+def logging(env, log_path="/home/xerous/Desktop/project/logs/debug_log.csv"):
+    step = env.common_step_counter
+    
+    robot = env.scene["robot"]
+    ee = env.scene["ee_frame"]
+    obj = env.scene["object"]
+    contact = env.scene["contact_sensor"]
+
+    # Get finger and hand body indices
+    body_names = robot.body_names
+    hand_idx = body_names.index("fr3_hand")
+    left_finger_idx = body_names.index("fr3_leftfinger")
+    right_finger_idx = body_names.index("fr3_rightfinger")
+    tcp_idx = body_names.index("fr3_hand_tcp")
+
+    hand_pos = robot.data.body_pos_w[0, hand_idx].cpu()
+    left_finger_pos = robot.data.body_pos_w[0, left_finger_idx].cpu()
+    right_finger_pos = robot.data.body_pos_w[0, right_finger_idx].cpu()
+    tcp_pos = robot.data.body_pos_w[0, tcp_idx].cpu()
+
+    # Initialize CSV on first call
+    if not hasattr(logging, "_initialized"):
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "step",
+                "ee_x", "ee_y", "ee_z",
+                "cube_x", "cube_y", "cube_z",
+                "offset_x", "offset_y", "offset_z",
+                "finger1", "finger2",
+                "contact_leftfinger_x", "contact_leftfinger_y", "contact_leftfinger_z",
+                "contact_rightfinger_x", "contact_rightfinger_y", "contact_rightfinger_z",
+                "joint_pos_0", "joint_pos_1", "joint_pos_2", "joint_pos_3",
+                "joint_pos_4", "joint_pos_5", "joint_pos_6",
+                "hand_x", "hand_y", "hand_z",
+                "left_finger_x", "left_finger_y", "left_finger_z",
+                "right_finger_x", "right_finger_y", "right_finger_z",
+                "tcp_x", "tcp_y", "tcp_z","ee_qw", "ee_qx", "ee_qy", "ee_qz",
+            ])
+        logging._initialized = True
+
+    ee_pos = ee.data.target_pos_w[0, 0].cpu()
+    cube_pos = obj.data.root_pos_w[0].cpu()
+    offset = (ee_pos - cube_pos).cpu()
+    finger_joints = robot.data.joint_pos[0, 7:].cpu()
+    joint_pos = robot.data.joint_pos[0, :7].cpu()
+    
+    contact_left = contact.data.net_forces_w[0, 10].cpu()
+    contact_right = contact.data.net_forces_w[0, 11].cpu()
+    ee_quat = ee.data.target_quat_w[0, 0].cpu()
+
+    tcp_idx = robot.body_names.index("fr3_hand_tcp")
+    left_idx = robot.body_names.index("fr3_leftfinger")
+    hand_idx = robot.body_names.index("fr3_hand")
+
+    print("hand z:        ", robot.data.body_pos_w[0, hand_idx, 2].item())
+    print("left_finger z: ", robot.data.body_pos_w[0, left_idx, 2].item())
+    print("tcp z:         ", robot.data.body_pos_w[0, tcp_idx, 2].item())
+    row = [
+        step,
+        *ee_pos.numpy().round(4),
+        *cube_pos.numpy().round(4),
+        *offset.numpy().round(4),
+        *finger_joints.numpy().round(4),
+        *contact_left.numpy().round(4),
+        *contact_right.numpy().round(4),
+        *joint_pos.numpy().round(4),
+        *hand_pos.numpy().round(4),
+        *left_finger_pos.numpy().round(4),
+        *right_finger_pos.numpy().round(4),
+        *tcp_pos.numpy().round(4),
+        *ee_quat.numpy().round(4)
+    ]
+
+
+    with open(log_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(row)
+    
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent."""
@@ -162,12 +245,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     depth_output_dir = os.path.join(log_dir, "videos", "depth_cam")
     os.makedirs(depth_output_dir, exist_ok=True)
 
-    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     # Replace the depth_writer variable and save_depth_frame function with this:
 
-    depth_state = {"writer": None}  
+    depth_state = {"writer": None}
+    rgb_state = {"writer": None}  
 
-    def save_depth_frame(env):
+    def save_depth_frame(env, save_rgb: bool = True):
         # Unwrap through all wrappers to get Isaac env
         isaac_env = env.unwrapped
         while hasattr(isaac_env, 'env'):
@@ -175,14 +259,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if hasattr(isaac_env, 'scene'):
                 break
 
+        # ── Depth ────────────────────────────────────────────────────────────────
         depth = isaac_env.scene["wrist_camera"].data.output["distance_to_image_plane"]
-        
+
         if depth.shape[-1] == 1:
             frame = depth[0, :, :, 0].cpu().numpy()
         else:
             frame = depth[0, 0].cpu().numpy()
-        
-        # Handle inf/nan
+
         frame = np.where(np.isfinite(frame), frame, 3.0)
         frame = np.clip(frame, 0.1, 3.0)
         frame = ((frame - 0.1) / (3.0 - 0.1) * 255).astype(np.uint8)
@@ -195,43 +279,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 fourcc, 30, (w, h)
             )
             print(f"[INFO] Depth writer opened: {depth_state['writer'].isOpened()}, size=({w},{h})")
-        
+
         depth_state["writer"].write(frame_colored)
 
+        # ── RGB ──────────────────────────────────────────────────────────────────
+        if not save_rgb:
+            return
 
+        rgb_raw = isaac_env.scene["wrist_camera"].data.output.get("rgba")
+        if rgb_raw is None:
+            return  # camera not configured with RGB output — skip silently
 
+        # Tensor shape: (N, H, W, 4) RGBA  or  (N, H, W, 3) RGB
+        rgb_np = rgb_raw[0].cpu().numpy()          # (H, W, 3or4)  uint8
+        if rgb_np.shape[-1] == 4:                  # drop alpha channel if present
+            rgb_np = rgb_np[..., :3]
 
-    # pred_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-10_17-15-24_training_lift_async_depth_PHASE_2_domain_randomization_increase/model_1300_encoder.pt"
-    # IMG_SIZE = 128
+        # Isaac Lab outputs RGB; OpenCV expects BGR
+        bgr = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2BGR)
+
+        if rgb_state["writer"] is None:
+            h, w = bgr.shape[:2]
+            rgb_state["writer"] = cv2.VideoWriter(
+                os.path.join(depth_output_dir, "rgb_cam.avi"),
+                fourcc, 30, (w, h)
+            )
+            print(f"[INFO] RGB writer opened: {rgb_state['writer'].isOpened()}, size=({w},{h})")
+
+        rgb_state["writer"].write(bgr)
+
     device = env_cfg.sim.device
 
-    # if os.path.exists(encoder_path):
-    #     print(f"[INFO] Loading encoder from: {encoder_path}")
-    #     _lift_depth_encoder._encoder = _lift_depth_encoder._build_encoder(
-    #         device,
-    #         torch.zeros(1, 1, IMG_SIZE, IMG_SIZE, device=device)
-    #     )
-    #     _lift_depth_encoder._encoder.load_state_dict(
-    #         torch.load(encoder_path, map_location=device)
-    #     )
-    #     _lift_depth_encoder._encoder.eval()  # eval mode for inference
-    #     print("[INFO] Encoder loaded.")
-    # else:
-    #     print(f"[WARNING] Encoder not found: {encoder_path}")
-
-    # predictor_path = "/home/xerous/Desktop/project/logs/rsl_rl/franka_lift_depth/2026-04-14_00-19-30_training_lift_depth_pred_joint/depth_predictor_4000.pt"
-    # import panda_train.tasks.manager_based.panda_lift.panda_train_env_cfg as env_module
-
-    # print("[INFO] Depth predictor loaded.")
-    # if os.path.exists(predictor_path):
-    #     checkpoint = torch.load(predictor_path, map_location=device)
-    #     env_module._lift_depth_predictor.load_state_dict(checkpoint["model"])
-    #     env_module._lift_depth_predictor.to(device)
-    #     env_module._lift_depth_predictor.eval()
-    #     print("[INFO] Depth predictor loaded.")
-    # else:
-    #     print(f"[WARNING] Depth predictor not found: {predictor_path}")
-
+   
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
@@ -276,6 +355,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # reset environment
     obs = env.get_observations()
+   
+    
     timestep = 0
     max_depth_frames = 1000  # save 1000 frames (~33 seconds at 30fps)
     depth_frame_count = 0
@@ -288,25 +369,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # Get the policy obs tensor from TensorDict
             obs_tensor = obs["policy"][0].cpu()  # first env, policy group
 
-            print(f"[obs] joint_pos:  {obs_tensor[0:9].numpy().round(3)}")
-            print(f"[obs] joint_vel:  {obs_tensor[9:18].numpy().round(3)}")
-            print(f"[obs] object_pos: {obs_tensor[18:21].numpy().round(3)}")
-            print(f"[obs] goal_pose:  {obs_tensor[21:28].numpy().round(3)}")
-            print(f"[obs] actions:    {obs_tensor[28:35].numpy().round(3)}")
-            print(f"[obs] depth_mean: {obs_tensor[35:99].mean().item():.4f}")
             actions = policy(obs)
-            # env stepping
-            obs, _, dones, _ = env.step(actions)
+
+            obs, _, dones, info = env.step(actions)
+         
+            # obs, _, dones, _ = env.step(actions)
             save_depth_frame(env)  # always save, no frame count check
+            logging(env.unwrapped)
             # print(f"depth prediction: {pred_obj_pos(env)}")
 
             if args_cli.video:
                 timestep += 1
                 if timestep == args_cli.video_length:
-                    if depth_state["writer"] is not None:
-                        depth_state["writer"].release()
-                        print(f"[INFO] Depth video saved to: {depth_output_dir}/depth_cam.avi")
-                        break
+                    break
+                   
             
             if version.parse(installed_version) >= version.parse("4.0.0"):
                 policy.reset(dones)
@@ -324,6 +400,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             time.sleep(sleep_time)
 
     # close the simulator
+    if depth_state["writer"] is not None:
+        depth_state["writer"].release()
+        print(f"[INFO] Depth video saved to: {depth_output_dir}/depth_cam.avi")
+     
+    if rgb_state["writer"] is not None:
+        rgb_state["writer"].release()
+        print(f"[Info] RGB video saved to : {depth_output_dir}/rgb_video.avi")
+    
     env.close()
 
 

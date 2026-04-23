@@ -54,13 +54,13 @@ class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 96
     max_iterations = 5000
     save_interval = 100
-    experiment_name = "franka_lift_depth"
-    run_name = "depth_ppo_cnn_finetunning_cuda_0"
+    experiment_name = "fr3_lift_depth"
+    run_name = "lift_ee_height"
     log_root_path = "/home/xerous/Desktop/project/logs/"
     logger = "wandb"
-    wandb_project = "isaac-panda"
-    load_run ="2026-04-18_12-57-47_depth_ppo_cnn"
-    load_checkpoint='model_1200.pt'
+    wandb_project = "isaac-fr3"
+    load_run ="2026-04-23_15-31-57_lift_ee_height"
+    load_checkpoint='model_500.pt'
 
     obs_groups = {
         "actor": ["depth", "student"],  # actor: depth CNN + proprio
@@ -114,17 +114,17 @@ class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class DistillationRunnerCfg(RslRlDistillationRunnerCfg):
 
   
-    load_run = "2026-04-16_20-43-27_pick_lift_policy"
+    # load_run = "2026-04-16_20-43-27_pick_lift_policy"
 
     num_steps_per_env = 96
     max_iterations = 5000
     save_interval = 100
     empirical_normalization = False
     experiment_name = "franka_distillation_depth"
-    run_name = "dist_train"
+    run_name = "fr3_lift_reach"
     log_root_path = "/home/xerous/Desktop/project/logs/"
     # logger = "wandb"
-    wandb_project = "isaac-panda"
+    wandb_project = "isaac-fr3"
 
     student: RslRlCNNModelCfg = RslRlCNNModelCfg(
         class_name="panda_train.modules.network.CNNModelWithAux",

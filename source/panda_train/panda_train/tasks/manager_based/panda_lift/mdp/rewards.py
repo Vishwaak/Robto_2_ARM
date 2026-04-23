@@ -42,8 +42,8 @@ def finger_object_distance(
     obj: RigidObject = env.scene[object_cfg.name]
 
     # finger positions
-    left_finger_idx  = robot.find_bodies("panda_leftfinger")[0][0]
-    right_finger_idx = robot.find_bodies("panda_rightfinger")[0][0]
+    left_finger_idx  = robot.find_bodies("fr3_leftfinger")[0][0]
+    right_finger_idx = robot.find_bodies("fr3_rightfinger")[0][0]
     left_pos  = robot.data.body_pos_w[:, left_finger_idx, :]
     right_pos = robot.data.body_pos_w[:, right_finger_idx, :]
     obj_pos   = obj.data.root_pos_w[:, :3]
@@ -54,8 +54,8 @@ def finger_object_distance(
     proximity  = torch.exp(-left_dist / std) + torch.exp(-right_dist / std)
 
     # gripper closure — finger joints: 0=closed, 0.04=open
-    left_joint_idx  = robot.find_joints("panda_finger_joint1")[0][0]
-    right_joint_idx = robot.find_joints("panda_finger_joint2")[0][0]
+    left_joint_idx  = robot.find_joints("fr3_finger_joint1")[0][0]
+    right_joint_idx = robot.find_joints("fr3_finger_joint2")[0][0]
     left_joint  = robot.data.joint_pos[:, left_joint_idx]
     right_joint = robot.data.joint_pos[:, right_joint_idx]
     gripper_closed = 1.0 - ((left_joint + right_joint) / 2.0) / 0.04  # 0=open, 1=closed
@@ -72,7 +72,7 @@ def ee_height_penalty(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
-    ee_idx = robot.find_bodies("panda_hand")[0][0]
+    ee_idx = robot.find_bodies("fr3_hand")[0][0]
     ee_height = robot.data.body_pos_w[:, ee_idx, 2]
     penalty = torch.clamp(min_height - ee_height, min=0.0)
     # print(f"EE height: min={ee_height.min().item():.4f} max={ee_height.max().item():.4f} mean={ee_height.mean().item():.4f}")
