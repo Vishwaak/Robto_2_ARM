@@ -54,18 +54,28 @@ class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 96
     max_iterations = 5000
     save_interval = 100
-    experiment_name = "fr3_lift_depth"
-    run_name = "lift_ee_height"
+    experiment_name = "fr3_lift_depth_PPO_obj_pos"
+    run_name = "lift_depth_ppo"
     log_root_path = "/home/xerous/Desktop/project/logs/"
     logger = "wandb"
     wandb_project = "isaac-fr3"
-    load_run ="2026-04-23_15-31-57_lift_ee_height"
-    load_checkpoint='model_500.pt'
+    # load_run = "2026-04-24_12-18-53_lift_reach_extended"
+    # model = 'model_500.pt'
+    # load_run ="2026-04-23_20-54-35_lift_reach"
+    # load_checkpoint='model_2400.pt'
 
     obs_groups = {
         "actor": ["depth", "student"],  # actor: depth CNN + proprio
         "critic": ["critic"],            # privileged critic
     }
+
+    # obs_groups = {
+    #     "actor": ["teacher"],  # actor: depth CNN + proprio
+    #     "critic": ["critic"],            # privileged critic
+    # }
+
+    
+    
 
     actor = RslRlCNNModelCfg(
         class_name="panda_train.modules.network.CNNModelWithAux",
@@ -85,6 +95,15 @@ class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             )
         },
     )
+
+    # actor = RslRlMLPModelCfg(
+    #     hidden_dims=[256, 128, 64],
+    #     activation="elu",
+    #     obs_normalization=False,
+    #     stochastic=True,
+    #     init_noise_std=1.0,
+
+    # )
 
     critic = RslRlMLPModelCfg(
         hidden_dims=[256, 128, 64],
@@ -113,17 +132,15 @@ class FrankaLiftDepthPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 @configclass
 class DistillationRunnerCfg(RslRlDistillationRunnerCfg):
 
-  
-    # load_run = "2026-04-16_20-43-27_pick_lift_policy"
-
+    load_run = "2026-04-24_15-36-31_lift_reach_extended"
     num_steps_per_env = 96
     max_iterations = 5000
     save_interval = 100
     empirical_normalization = False
-    experiment_name = "franka_distillation_depth"
-    run_name = "fr3_lift_reach"
+    experiment_name = "fr3_lift_depth_PPO_obj_pos"
+    run_name = "franka_lift_depth_distil"
     log_root_path = "/home/xerous/Desktop/project/logs/"
-    # logger = "wandb"
+    logger = "wandb"
     wandb_project = "isaac-fr3"
 
     student: RslRlCNNModelCfg = RslRlCNNModelCfg(
@@ -135,16 +152,17 @@ class DistillationRunnerCfg(RslRlDistillationRunnerCfg):
         init_noise_std=1.0,
         cnn_cfg={
             "depth": RslRlCNNModelCfg.CNNCfg(
-                output_channels=[32,64, 3],
+                output_channels=[32,64],
                 kernel_size=3,
                 stride=2,
                 norm='none',
                 activation="elu",
-                global_pool="max",  # flattens spatial dims to vector
+                global_pool="max",  
             )
         },
     )
 
+    load_checkpoint = 'model_900.pt'
     teacher: RslRlMLPModelCfg = RslRlMLPModelCfg(
         hidden_dims=[256, 128, 64],
         activation="elu",

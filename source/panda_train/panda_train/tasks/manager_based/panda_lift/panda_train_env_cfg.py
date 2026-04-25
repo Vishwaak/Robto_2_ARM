@@ -45,7 +45,7 @@ from isaaclab.sensors import TiledCameraCfg  # isort: skip
 
 
 from panda_train.tasks.manager_based.panda_lift.mdp.rewards import finger_object_distance
-from panda_train.tasks.manager_based.panda_lift.mdp.rewards import ee_height_penalty, ee_orientation_upright_reward
+from panda_train.tasks.manager_based.panda_lift.mdp.rewards import ee_height_penalty, ee_orientation_upright_reward, gripper_open_during_approach
 
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -86,18 +86,7 @@ def save_depth_image(env, env_ids):
           f"min={visibility.min():.3f}, "
           f"envs with >1% visible: {(visibility > 0.01).sum()}/{len(visibility)}")
     
-    # img = depth_flat[0].cpu().numpy()
-    # save_dir = "/home/xerous/Desktop/project/logs/depth_imgs"
-    # os.makedirs(save_dir, exist_ok=True)
-
-    # plt.figure(figsize=(6, 6))
-    # plt.imshow(img, cmap='gray', vmin=0.0, vmax=3.0)
-    # plt.colorbar(label='depth (m)')
-    # plt.title(f"Step {step} | vis={visibility[0]:.3f}")
-    # plt.tight_layout()
-    # plt.savefig(os.path.join(save_dir, f"depth_step{step:06d}.png"))
-    # plt.close()
-
+  
 @configclass
 class CriticCfg(ObsGroup):
     # mirror all actor terms
@@ -303,7 +292,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "object_cfg": SceneEntityCfg("object"),
-                "scale_range": (0.7, 1.2),  # 70% to 100% of original size
+                "scale_range": (0.7, 1.0),  # 70% to 100% of original size
                 "object_type": "cube"
             },
         )
@@ -323,8 +312,8 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             mode="reset",
             params={
                 "pose_range": {
-                    "x": (-0.2, 0.2),
-                    "y": (-0.15, 0.15),
+                    "x": (-0.1, 0.1),
+                    "y": (-0.1, 0.1),
                     "z": (0.0, 0.0),
                 },
                 "velocity_range": {},
@@ -371,33 +360,26 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 params={"min_height": 0.02}, 
         )
 
-        # self.rewards.gripper_close_near_object = RewTerm(
-        #         func=mdp.gripper_close_near_object,
-        #         weight=2.0,
-        #         params={"std": 0.1,},
-        # )
+       
         self.rewards.grasp_and_lift_bonus = RewTerm(
                     func=mdp.grasp_and_lift_bonus,
-                    weight=50.0,
+                    weight=25.0,
                     params={"lift_height": 0.05},
         )
 
-        # self.rewards.ee_orientation_upright_reward = RewTerm (
-        #             func=ee_orientation_upright_reward,
-        #             weight = 15.0,
-        #             params={"lift_height": 0.02}
-        # )
+      
         self.curriculum.action_rate = CurrTerm(
-            func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1.0e-1, "num_steps": 400000}
+            func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1.0e-1, "num_steps": 50000}
         )
 
         self.curriculum.joint_vel = CurrTerm(
-            func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1.0e-1, "num_steps": 400000}
+            func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1.0e-1, "num_steps": 50000}
         )
 
         self.rewards.reaching_object.weight = 1.0        # was 1.0
-        self.rewards.lifting_object.weight = 25.0        # was 15.0
-        self.rewards.object_goal_tracking.weight = 15.0   # was default
+        self.rewards.lifting_object.weight = 5.0        # was 15.0
+        self.rewards.object_goal_tracking.weight = 50.0   # was default
+   
     
 @configclass
 class FrankaCubeLiftDepthEnvCfg_PLAY(FrankaCubeLiftDepthEnvCfg):

@@ -157,9 +157,9 @@ def logging(env, log_path="/home/xerous/Desktop/project/logs/debug_log.csv"):
     left_idx = robot.body_names.index("fr3_leftfinger")
     hand_idx = robot.body_names.index("fr3_hand")
 
-    print("hand z:        ", robot.data.body_pos_w[0, hand_idx, 2].item())
-    print("left_finger z: ", robot.data.body_pos_w[0, left_idx, 2].item())
-    print("tcp z:         ", robot.data.body_pos_w[0, tcp_idx, 2].item())
+    # print("hand z:        ", robot.data.body_pos_w[0, hand_idx, 2].item())
+    # print("left_finger z: ", robot.data.body_pos_w[0, left_idx, 2].item())
+    # print("tcp z:         ", robot.data.body_pos_w[0, tcp_idx, 2].item())
     row = [
         step,
         *ee_pos.numpy().round(4),
@@ -371,6 +371,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
             actions = policy(obs)
 
+            print("Gripper state",actions)
             obs, _, dones, info = env.step(actions)
          
             # obs, _, dones, _ = env.step(actions)
@@ -382,7 +383,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 timestep += 1
                 if timestep == args_cli.video_length:
                     break
-                   
+            
             
             if version.parse(installed_version) >= version.parse("4.0.0"):
                 policy.reset(dones)

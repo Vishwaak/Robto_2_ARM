@@ -93,3 +93,29 @@ def ee_orientation_upright_reward(env, lift_height: float = 0.1) -> torch.Tensor
     # Reward pointing down (-z) only when lifted
     reward = -ee_z_world_z * cube_lifted
     return reward
+
+
+def gripper_open_during_approach(
+    env: ManagerBasedRLEnv,
+    std: float = 0.15,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    robot = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+
+    # EE distance to object
+    ee_pos = env.scene["ee_frame"].data.target_pos_w[:, 0]
+    obj_pos = obj.data.root_pos_w[:, :3]
+    dist = torch.norm(ee_pos - obj_pos, dim=-1)
+
+    # How close we are to the object (0=far, 1=very close)
+    proximity = torch.exp(-dist / std)
+
+    # Gripper openness (0=closed, 1=open)
+    finger_joint_idx = robot.find_joints("fr3_finger_joint1")[0][0]
+    finger_pos = robot.data.joint_pos[:, finger_joint_idx]
+    gripper_open = finger_pos / 0.04  # normalize to [0, 1]
+
+    # Reward open gripper when approaching
+    return proximity * gripper_open
