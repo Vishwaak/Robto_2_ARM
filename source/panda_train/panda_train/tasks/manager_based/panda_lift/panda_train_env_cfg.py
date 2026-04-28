@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import torch
-import torch.nn as nn
 
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -35,11 +34,6 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from panda_train.tasks.manager_based.panda_lift.mdp.events import randomize_camera_pose, randomize_object_scale
 
 import torch
-from collections import deque
-
-import wandb
-import os
-
 
 from isaaclab.sensors import TiledCameraCfg  # isort: skip
 
@@ -261,7 +255,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
                 spawn=sim_utils.PinholeCameraCfg(
                     focal_length=1.93,
                     horizontal_aperture=3.896,
-                    clipping_range=(0.1, 3.0),
+                    clipping_range=(0.01, 3.0),
                 ),
                 height=IMG_SIZE,
                 width=IMG_SIZE,
@@ -376,7 +370,7 @@ class FrankaCubeLiftDepthEnvCfg(LiftEnvCfg):
             func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1.0e-1, "num_steps": 50000}
         )
 
-        self.rewards.reaching_object.weight = 1.0        # was 1.0
+        self.rewards.reaching_object.weight = 3.0        # was 1.0
         self.rewards.lifting_object.weight = 5.0        # was 15.0
         self.rewards.object_goal_tracking.weight = 50.0   # was default
    
